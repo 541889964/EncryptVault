@@ -1,3 +1,4 @@
+
 package com.sourceguard.tool.crypto
 
 import android.content.Context
@@ -32,18 +33,18 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val MAGIC: Byte = 0x19
+        private const val MAGIC: Byte = 0x20
         private const val SS = 32
         private const val IS = 12
-        private const val TAG = 128
+        private const val TAG_BITS = 128
         private const val HS = 32
         private const val PITER = 6_000_000
         private const val PRF = "PBKDF2WithHmacSHA512"
         private const val MBITS = 512
         private const val OITER = 2_000_000
         private const val OMD = "PBKDF2WithHmacSHA512"
-        private const val HIA = "SourceGuard-v19-aes"
-        private const val HIM = "SourceGuard-v19-mac"
+        private const val HIA = "SourceGuard-v21-aes"
+        private const val HIM = "SourceGuard-v21-mac"
         private const val CH =
             "a3f1c8e29b4d60715f2e8a3c9d17b5e4f028c6a9d3b7e15f824a6c0d9e3f7b12"
         private const val SW = 1500L
@@ -53,13 +54,24 @@ class CryptoManager(private val ctx: Context) {
     private var sMs: ByteArray? = null
     private var sMk: ByteArray? = null
 
-    private fun ByteArray.hx(): String = joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    // ============================================================
+    //  关键修复: Byte 是有符号的 (-128..127)
+    //  必须用 it.toInt() and 0xFF 转成 0..255 才能保证 2 位 hex
+    //  否则负数字节会输出 8 位 hex (ffffff80)，导致 hex 长度爆炸
+    // ============================================================
+    private fun ByteArray.hx(): String =
+        joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 
     private fun s256(s: String): String =
-        MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8)).hx()
+        MessageDigest.getInstance("SHA-256")
+            .digest(s.toByteArray(Charsets.UTF_8))
+            .hx()
 
     private fun id16(d: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(d).copyOf(8).hx()
+        MessageDigest.getInstance("SHA-256")
+            .digest(d)
+            .copyOf(8)
+            .hx()
 
     private fun dM(p: String, s: ByteArray): ByteArray {
         val f = SecretKeyFactory.getInstance(PRF)
@@ -118,6 +130,9 @@ class CryptoManager(private val ctx: Context) {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(d) }
     }
 
+    // ============================================================
+    //  文件加密
+    // ============================================================
     suspend fun encryptFile(uri: Uri, p: String): Boolean = withContext(Dispatchers.IO) {
         var ak: ByteArray? = null
         var mk: ByteArray? = null
@@ -131,11 +146,12 @@ class CryptoManager(private val ctx: Context) {
             ak = hk(mkk, fs, HIA, 32)
             mk = hk(mkk, fs, HIM, 32)
             val c = Cipher.getInstance("AES/GCM/NoPadding")
-            c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(ak, "AES"), GCMParameterSpec(TAG, iv))
+            c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(ak, "AES"), GCMParameterSpec(TAG_BITS, iv))
             val ct = c.doFinal(pl)
             val hm = Mac.getInstance("HmacSHA256")
             hm.init(SecretKeySpec(mk, "HmacSHA256"))
-            hm.update(iv); hm.update(ct)
+            hm.update(iv)
+            hm.update(ct)
             val tg = hm.doFinal()
             val out = ByteArray(1 + SS + SS + IS + ct.size + HS)
             var i = 0
@@ -156,6 +172,9 @@ class CryptoManager(private val ctx: Context) {
         }
     }
 
+    // ============================================================
+    //  文件解密
+    // ============================================================
     suspend fun decryptFile(uri: Uri, p: String): Boolean = withContext(Dispatchers.IO) {
         var ak: ByteArray? = null
         var mk: ByteArray? = null
@@ -178,13 +197,14 @@ class CryptoManager(private val ctx: Context) {
             mk = hk(mk2, fs, HIM, 32)
             val hm = Mac.getInstance("HmacSHA256")
             hm.init(SecretKeySpec(mk, "HmacSHA256"))
-            hm.update(iv); hm.update(ct)
+            hm.update(iv)
+            hm.update(ct)
             if (!MessageDigest.isEqual(tg, hm.doFinal())) {
                 Thread.sleep(SW)
                 return@withContext false
             }
             val c = Cipher.getInstance("AES/GCM/NoPadding")
-            c.init(Cipher.DECRYPT_MODE, SecretKeySpec(ak, "AES"), GCMParameterSpec(TAG, iv))
+            c.init(Cipher.DECRYPT_MODE, SecretKeySpec(ak, "AES"), GCMParameterSpec(TAG_BITS, iv))
             wB(uri, c.doFinal(ct))
             sPh = s256(p); sMs = ms; sMk = mk2
             true
@@ -197,6 +217,9 @@ class CryptoManager(private val ctx: Context) {
         }
     }
 
+    // ============================================================
+    //  Shell 保护 — 三层变换
+    // ============================================================
     private fun dO(p: String, s: ByteArray): Pair<ByteArray, ByteArray> {
         val f = SecretKeyFactory.getInstance(OMD)
         val sp = PBEKeySpec(p.toCharArray(), s, OITER, 48 * 8)
@@ -204,30 +227,50 @@ class CryptoManager(private val ctx: Context) {
         return d.copyOfRange(0, 32) to d.copyOfRange(32, 48)
     }
 
+    // 关键: km 和 dk 都必须是 96 hex 字符
+    // km = (32B key + 16B iv) = 48B → hx() = 96 字符
+    // dk = SHA-512(任意长度) = 64B → hx() = 128 字符 → take(96) = 96 字符
     private fun t3(k: ByteArray, iv: ByteArray, tag: String): List<String> {
         val km = (k + iv).hx()
-        val dk = MessageDigest.getInstance("SHA-512")
-            .digest(tag.toByteArray(Charsets.UTF_8)).hx().take(96)
+        require(km.length == 96) { "km 长度错误: ${km.length}" }
+
+        val dkFull = MessageDigest.getInstance("SHA-512")
+            .digest(tag.toByteArray(Charsets.UTF_8))
+            .hx()
+        require(dkFull.length == 128) { "SHA-512 输出长度错误: ${dkFull.length}" }
+        val dk = dkFull.take(96)
+
+        // 层1: XOR
         val t1 = StringBuilder(96)
         var i = 0
         while (i < 96) {
-            t1.append("%02x".format(km.substring(i, i+2).toInt(16) xor dk.substring(i, i+2).toInt(16)))
+            val a = km.substring(i, i + 2).toInt(16)
+            val b = dk.substring(i, i + 2).toInt(16)
+            t1.append("%02x".format(a xor b))
             i += 2
         }
+
+        // 层2: 4-hex 单元反序
         val t2 = StringBuilder(96)
         i = 0
         while (i < 96) {
-            t2.insert(0, t1.substring(i, i+4))
+            t2.insert(0, t1.substring(i, i + 4))
             i += 4
         }
-        val t3 = StringBuilder(96)
+
+        // 层3: XOR CONST
+        val t3s = StringBuilder(96)
         i = 0
         while (i < 96) {
-            t3.append("%02x".format(t2.substring(i, i+2).toInt(16) xor CH.substring(i, i+2).toInt(16)))
+            val a = t2.substring(i, i + 2).toInt(16)
+            val b = CH.substring(i, i + 2).toInt(16)
+            t3s.append("%02x".format(a xor b))
             i += 2
         }
-        val s = t3.toString()
-        return (0 until 6).map { s.substring(it*16, (it+1)*16) }
+
+        val s = t3s.toString()
+        require(s.length == 96) { "t3 长度错误: ${s.length}" }
+        return (0 until 6).map { s.substring(it * 16, (it + 1) * 16) }
     }
 
     suspend fun protectShellScript(
@@ -251,6 +294,7 @@ class CryptoManager(private val ctx: Context) {
             of.parentFile?.mkdirs()
             val pl = s.readBytes()
             val D = "${'$'}"
+
             val b64: String
             val segs: List<String>
             val dSalt: String
@@ -258,10 +302,9 @@ class CryptoManager(private val ctx: Context) {
             if (pm) {
                 val salt = ByteArray(8).also { SecureRandom().nextBytes(it) }
                 val pair = dO(p, salt)
-                val k = pair.first
-                val iv = pair.second
                 val c = Cipher.getInstance("AES/CBC/PKCS5Padding")
-                c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(k, "AES"), IvParameterSpec(iv))
+                c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(pair.first, "AES"),
+                    IvParameterSpec(pair.second))
                 val ct = c.doFinal(pl)
                 val blob = ByteArray(16 + ct.size)
                 System.arraycopy("Salted__".toByteArray(Charsets.US_ASCII), 0, blob, 0, 8)
@@ -287,7 +330,7 @@ class CryptoManager(private val ctx: Context) {
 
             val id = id16(pl)
             val mode = if (pm) "password" else "nopass"
-            val eT = if (vd > 0) System.currentTimeMillis()/1000L + vd.toLong()*86400L else 0L
+            val eT = if (vd > 0) System.currentTimeMillis() / 1000L + vd.toLong() * 86400L else 0L
             val bF = if (db) "1" else "0"
 
             val nV = if (!pm) """
@@ -306,185 +349,203 @@ __EV_BIND=$bF
 
             val tpl = """
 #!/data/data/com.termux/files/usr/bin/bash
-# SourceGuard v19 ($mode)
+# SourceGuard v21 ($mode)
 umask 077
+
 case "${D}-" in *x*) exit 1 ;; esac
 [ -n "${D}{BASH_XTRACEFD:-}" ] && exit 1
 case ":${D}{SHELLOPTS:-}:" in *:xtrace:*) exit 1 ;; esac
 [ "${D}{PS4:-+ }" != "+ " ] && exit 1
-if [ -r /proc/self/status ]; then grep -qE '^TracerPid:\s*[1-9]' /proc/self/status 2>/dev/null && exit 1; fi
+
+if [ -r /proc/self/status ]; then
+    grep -qE '^TracerPid:\s*[1-9]' /proc/self/status 2>/dev/null && exit 1
+fi
 [ -n "${D}{LD_PRELOAD:-}" ] && exit 1
+
 [ -z "${D}{BASH_SOURCE[0]:-}" ] && exit 1
 __EV_SELF="${D}{BASH_SOURCE[0]}"
 [ -f "${D}__EV_SELF" ] || __EV_SELF="${D}0"
 [ -f "${D}__EV_SELF" ] || exit 1
 [ -L "${D}__EV_SELF" ] && exit 1
+
 if [ -r "/proc/${D}PPID/cmdline" ]; then
-  __EV_PP=$(tr '\0' ' ' < "/proc/${D}PPID/cmdline" 2>/dev/null)
-  case "${D}__EV_PP" in
-    *sed*|*awk*|*grep*|*"cat "*|*tee*|*strace*|*ltrace*|*gdb*|*python*|*python3*|*pypy*|*perl*|*ruby*|*node*|*hexdump*|*xxd*|*strings*|*jadx*|*apktool*|*dex2jar*|*jd-cli*|*procyon*|*radare2*|*r2*|*ghidra*|*ida*|*objdump*|*readelf*)
-      printf '❌ 父进程分析工具\n' >&2; exit 1 ;;
-  esac
-fi
-[ -n "${D}{PYTHONPATH:-}" ] && exit 1
-[ -n "${D}{PYTHONHOME:-}" ] && exit 1
-[ -n "${D}{PYTHONSTARTUP:-}" ] && exit 1
-if [ -d /proc ]; then
-  for __p in /proc/[0-9]*/comm; do
-    [ -r "${D}__p" ] || continue
-    __n=$(cat "${D}__p" 2>/dev/null)
-    case "${D}__n" in
-      python|python3|ipython|pypy|pypy3|jupyter|spyder|pycharm) printf '❌ Python\n' >&2; exit 1 ;;
-      jadx|jadx-gui|apktool|dex2jar|jd-cli|jd-gui|procyon|radare2|r2|ghidra|ida64|ida|ida32|objdump|readelf|nm|dwarfdump) printf '❌ 反编译\n' >&2; exit 1 ;;
-      strace|ltrace|gdb|lldb|valgrind|rr) printf '❌ 调试追踪\n' >&2; exit 1 ;;
+    __EV_PP=$(tr '\0' ' ' < "/proc/${D}PPID/cmdline" 2>/dev/null)
+    case "${D}__EV_PP" in
+        *sed*|*awk*|*grep*|*"cat "*|*tee*|*strace*|*ltrace*|*gdb*|*python*|*python3*|*perl*|*ruby*|*node*|*hexdump*|*xxd*|*strings*)
+            printf '❌ 父进程分析工具\n' >&2; exit 1 ;;
     esac
-  done
 fi
-for __f in /data/local/tmp/jadx /data/local/tmp/jadx-gui /data/local/tmp/apktool* /data/local/tmp/dex2jar* /data/local/tmp/jd-cli* /data/local/tmp/jd-gui* /data/local/tmp/ghidra* /data/local/tmp/ida* /data/local/tmp/radare2* /data/local/tmp/r2* /sdcard/jadx /sdcard/apktool /sdcard/dex2jar /sdcard/ghidra /sdcard/ida /sdcard/MT2 /sdcard/NP管理器 /sdcard/Android/data/bin.mt.plus; do
-  [ -e "${D}__f" ] && { printf '❌ 反编译工具残留\n' >&2; exit 1; }
+
+for __c in openssl sha256sum base64 date hostname getprop cut tail head; do
+    declare -F "${D}__c" >/dev/null 2>&1 && {
+        printf '❌ 命令被覆盖: ${D}__c\n' >&2; exit 1
+    }
 done
-for __h in /data/adb/lspd /data/adb/lsposed /data/adb/edxposed /data/adb/riru /data/adb/riru-modules /data/misc/riru /data/misc/lspd /system/framework/edxposed.jar /system/framework/lsposed.jar; do
-  [ -e "${D}__h" ] && { printf '❌ Hook 框架\n' >&2; exit 1; }
-done
-for __d in /system/bin/debuggerd /system/bin/debuggerd64 /data/local/tmp/dump* /data/local/tmp/memdump* /data/local/tmp/gcore* /data/local/tmp/gdbserver*; do
-  [ -e "${D}__d" ] && { printf '❌ 内存 dump\n' >&2; exit 1; }
-done
-for __c in openssl sha256sum sha512sum base64 date hostname getprop cut tail head; do
-  declare -F "${D}__c" >/dev/null 2>&1 && { printf '❌ 命令覆盖\n' >&2; exit 1; }
-done
+
 __EV_LAST=$(tail -n 1 "${D}__EV_SELF")
 case "${D}__EV_LAST" in
-  \#HASH:*) __EV_EXP="${D}{__EV_LAST#\#HASH:}" ;;
-  *) printf '❌ 结构异常\n' >&2; exit 1 ;;
+    \#HASH:*) __EV_EXP="${D}{__EV_LAST#\#HASH:}" ;;
+    *) printf '❌ 结构异常\n' >&2; exit 1 ;;
 esac
 __EV_ACT=$(head -n -1 "${D}__EV_SELF" | sha256sum | awk '{print ${D}1}')
 if [ "${D}__EV_EXP" != "${D}__EV_ACT" ]; then
-  printf '❌ 脚本被修改\n' >&2
-  if command -v shred >/dev/null 2>&1; then shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null; else rm -f "${D}__EV_SELF"; fi
-  exit 1
+    printf '❌ 脚本被修改\n' >&2
+    if command -v shred >/dev/null 2>&1; then
+        shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null
+    else
+        rm -f "${D}__EV_SELF"
+    fi
+    exit 1
 fi
-unset __EV_LAST __EV_EXP __EV_ACT __EV_PP __n __f __c __h __d
+unset __EV_LAST __EV_EXP __EV_ACT __EV_PP __c
+
 command -v openssl >/dev/null 2>&1 || exit 1
 command -v sha256sum >/dev/null 2>&1 || exit 1
+
 $eL
 if [ "${D}__EV_EXP" -gt 0 ]; then
-  if [ $(date +%s) -gt "${D}__EV_EXP" ]; then
-    printf '💥 已过期\n' >&2
-    if command -v shred >/dev/null 2>&1; then shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null; else rm -f "${D}__EV_SELF"; fi
-    exit 1
-  fi
+    if [ $(date +%s) -gt "${D}__EV_EXP" ]; then
+        printf '💥 已过期\n' >&2
+        if command -v shred >/dev/null 2>&1; then
+            shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null
+        else
+            rm -f "${D}__EV_SELF"
+        fi
+        exit 1
+    fi
 fi
+
 __EV_TMP="${D}{TMPDIR:-/tmp}/.ev_${D}${D}_${D}RANDOM"
 trap 'rm -f "${D}{__EV_TMP}.enc" "${D}{__EV_TMP}.sh" 2>/dev/null' EXIT INT TERM HUP
+
 __EV_MODE='$mode'
 __EV_D='$b64'
 $nV
 __EV_MAX=$mr
 __EV_FAIL=$fl
 __EV_ID='$id'
+
 printf '%s' "${D}__EV_D" | base64 -d > "${D}{__EV_TMP}.enc" 2>/dev/null
 unset __EV_D
 [ -s "${D}{__EV_TMP}.enc" ] || exit 1
+
 if [ "${D}__EV_MODE" = "password" ]; then
-  __EV_MAX_TRIES=${D}__EV_FAIL
-  [ "${D}__EV_MAX_TRIES" -le 0 ] && __EV_MAX_TRIES=1
-  __EV_OK=0
-  __EV_TRIES=0
-  while [ ${D}__EV_TRIES -lt ${D}__EV_MAX_TRIES ]; do
-    printf '\n🔐 密码: ' >&2
-    if command -v stty >/dev/null 2>&1 && [ -t 0 ]; then
-      stty -echo 2>/dev/null
-      IFS= read -r __EV_PWD
-      stty echo 2>/dev/null
-      printf '\n' >&2
-    else
-      IFS= read -r __EV_PWD
+    __EV_MAX_TRIES=${D}__EV_FAIL
+    [ "${D}__EV_MAX_TRIES" -le 0 ] && __EV_MAX_TRIES=1
+    __EV_OK=0
+    __EV_TRIES=0
+    while [ ${D}__EV_TRIES -lt ${D}__EV_MAX_TRIES ]; do
+        printf '\n🔐 密码: ' >&2
+        if command -v stty >/dev/null 2>&1 && [ -t 0 ]; then
+            stty -echo 2>/dev/null
+            IFS= read -r __EV_PWD
+            stty echo 2>/dev/null
+            printf '\n' >&2
+        else
+            IFS= read -r __EV_PWD
+        fi
+        [ -z "${D}__EV_PWD" ] && { __EV_TRIES=$((__EV_TRIES+1)); continue; }
+        printf '⏳ 派生密钥...\n' >&2
+        printf '%s\n' "${D}__EV_PWD" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 2000000 -md sha512 -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
+        __EV_RC=${D}?
+        unset __EV_PWD
+        if [ ${D}__EV_RC -eq 0 ] && [ -s "${D}{__EV_TMP}.sh" ]; then
+            __EV_OK=1
+            break
+        fi
+        rm -f "${D}{__EV_TMP}.sh"
+        __EV_TRIES=$((__EV_TRIES+1))
+        printf '❌ 密码错 (%s/%s)\n' "${D}__EV_TRIES" "${D}__EV_MAX_TRIES" >&2
+    done
+    rm -f "${D}{__EV_TMP}.enc"
+    if [ ${D}__EV_OK -ne 1 ]; then
+        printf '💥 密码错误过多\n' >&2
+        if command -v shred >/dev/null 2>&1; then
+            shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null
+        else
+            rm -f "${D}__EV_SELF"
+        fi
+        exit 1
     fi
-    if [ -z "${D}__EV_PWD" ]; then
-      __EV_TRIES=$((__EV_TRIES+1))
-      continue
-    fi
-    printf '⏳ 派生密钥...\n' >&2
-    printf '%s\n' "${D}__EV_PWD" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 2000000 -md sha512 -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
-    __EV_RC=${D}?
-    unset __EV_PWD
-    if [ ${D}__EV_RC -eq 0 ] && [ -s "${D}{__EV_TMP}.sh" ]; then
-      __EV_OK=1
-      break
-    fi
-    rm -f "${D}{__EV_TMP}.sh"
-    __EV_TRIES=$((__EV_TRIES+1))
-    printf '❌ 密码错 (%s/%s)\n' "${D}__EV_TRIES" "${D}__EV_MAX_TRIES" >&2
-  done
-  rm -f "${D}{__EV_TMP}.enc"
-  if [ ${D}__EV_OK -ne 1 ]; then
-    printf '💥 密码错误过多\n' >&2
-    if command -v shred >/dev/null 2>&1; then shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null; else rm -f "${D}__EV_SELF"; fi
-    exit 1
-  fi
 else
-  if [ "${D}__EV_BIND" = "1" ]; then
-    __EV_HN=$(hostname 2>/dev/null || echo "")
-    __EV_MD=$(getprop ro.product.model 2>/dev/null || echo "")
-    __EV_BR=$(getprop ro.product.brand 2>/dev/null || echo "")
-    __EV_TAG="${D}__EV_SALT:BIND"
-  else
-    __EV_TAG="${D}__EV_SALT:FIXED"
-  fi
-  __EV_DK=$(printf '%s' "${D}__EV_TAG" | sha512sum | awk '{print ${D}1}' | cut -c1-96)
-  unset __EV_HN __EV_MD __EV_BR __EV_TAG __EV_SALT
-  __EV_T3="${D}{__EV_P1}${D}{__EV_P2}${D}{__EV_P3}${D}{__EV_P4}${D}{__EV_P5}${D}{__EV_P6}"
-  unset __EV_P1 __EV_P2 __EV_P3 __EV_P4 __EV_P5 __EV_P6
-  __EV_T2=""
-  __EV_I=0
-  while [ ${D}__EV_I -lt 96 ]; do
-    __EV_B=$((16#${D}{__EV_T3:${D}__EV_I:2}))
-    __EV_C=$((16#${D}{__EV_CONST:${D}__EV_I:2}))
-    __EV_T2="${D}{__EV_T2}$(printf '%02x' $(( __EV_B ^ __EV_C )))"
-    __EV_I=$((__EV_I+2))
-  done
-  __EV_T1=""
-  __EV_I=0
-  while [ ${D}__EV_I -lt 96 ]; do
-    __EV_T1="${D}{__EV_T2:${D}__EV_I:4}${D}{__EV_T1}"
-    __EV_I=$((__EV_I+4))
-  done
-  __EV_KM=""
-  __EV_I=0
-  while [ ${D}__EV_I -lt 96 ]; do
-    __EV_B=$((16#${D}{__EV_T1:${D}__EV_I:2}))
-    __EV_DD=$((16#${D}{__EV_DK:${D}__EV_I:2}))
-    __EV_KM="${D}{__EV_KM}$(printf '%02x' $(( __EV_B ^ __EV_DD )))"
-    __EV_I=$((__EV_I+2))
-  done
-  unset __EV_T3 __EV_T2 __EV_T1 __EV_DK __EV_CONST __EV_I __EV_B __EV_C __EV_DD
-  __EV_KEY=$(printf '%s' "${D}__EV_KM" | cut -c1-64)
-  __EV_IV=$(printf '%s' "${D}__EV_KM" | cut -c65-96)
-  unset __EV_KM
-  openssl enc -d -aes-256-cbc -K "${D}__EV_KEY" -iv "${D}__EV_IV" -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
-  __EV_RC=${D}?
-  rm -f "${D}{__EV_TMP}.enc"
-  unset __EV_KEY __EV_IV
-  if [ ${D}__EV_RC -ne 0 ] || [ ! -s "${D}{__EV_TMP}.sh" ]; then
-    printf '❌ 解密失败\n' >&2
-    if command -v shred >/dev/null 2>&1; then shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null; else rm -f "${D}__EV_SELF"; fi
-    exit 1
-  fi
+    if [ "${D}__EV_BIND" = "1" ]; then
+        __EV_HN=$(hostname 2>/dev/null || echo "")
+        __EV_MD=$(getprop ro.product.model 2>/dev/null || echo "")
+        __EV_BR=$(getprop ro.product.brand 2>/dev/null || echo "")
+        __EV_TAG="${D}__EV_SALT:BIND"
+    else
+        __EV_TAG="${D}__EV_SALT:FIXED"
+    fi
+    __EV_DK=$(printf '%s' "${D}__EV_TAG" | sha512sum | awk '{print ${D}1}' | cut -c1-96)
+    unset __EV_HN __EV_MD __EV_BR __EV_TAG __EV_SALT
+
+    __EV_T3="${D}{__EV_P1}${D}{__EV_P2}${D}{__EV_P3}${D}{__EV_P4}${D}{__EV_P5}${D}{__EV_P6}"
+    unset __EV_P1 __EV_P2 __EV_P3 __EV_P4 __EV_P5 __EV_P6
+
+    __EV_T2=""
+    __EV_I=0
+    while [ ${D}__EV_I -lt 96 ]; do
+        __EV_B=$((16#${D}{__EV_T3:${D}__EV_I:2}))
+        __EV_C=$((16#${D}{__EV_CONST:${D}__EV_I:2}))
+        __EV_T2="${D}{__EV_T2}$(printf '%02x' $(( __EV_B ^ __EV_C )))"
+        __EV_I=$((__EV_I+2))
+    done
+
+    __EV_T1=""
+    __EV_I=0
+    while [ ${D}__EV_I -lt 96 ]; do
+        __EV_T1="${D}{__EV_T2:${D}__EV_I:4}${D}{__EV_T1}"
+        __EV_I=$((__EV_I+4))
+    done
+
+    __EV_KM=""
+    __EV_I=0
+    while [ ${D}__EV_I -lt 96 ]; do
+        __EV_B=$((16#${D}{__EV_T1:${D}__EV_I:2}))
+        __EV_DD=$((16#${D}{__EV_DK:${D}__EV_I:2}))
+        __EV_KM="${D}{__EV_KM}$(printf '%02x' $(( __EV_B ^ __EV_DD )))"
+        __EV_I=$((__EV_I+2))
+    done
+    unset __EV_T3 __EV_T2 __EV_T1 __EV_DK __EV_CONST __EV_I __EV_B __EV_C __EV_DD
+
+    __EV_KEY=$(printf '%s' "${D}__EV_KM" | cut -c1-64)
+    __EV_IV=$(printf '%s' "${D}__EV_KM" | cut -c65-96)
+    unset __EV_KM
+
+    openssl enc -d -aes-256-cbc -K "${D}__EV_KEY" -iv "${D}__EV_IV" -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
+    __EV_RC=${D}?
+    rm -f "${D}{__EV_TMP}.enc"
+    unset __EV_KEY __EV_IV
+    if [ ${D}__EV_RC -ne 0 ] || [ ! -s "${D}{__EV_TMP}.sh" ]; then
+        printf '❌ 解密失败\n' >&2
+        if command -v shred >/dev/null 2>&1; then
+            shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null
+        else
+            rm -f "${D}__EV_SELF"
+        fi
+        exit 1
+    fi
 fi
+
 if [ "${D}__EV_MAX" -gt 0 ]; then
-  __EV_STATE="${D}{HOME}/.ev_state/${D}__EV_ID"
-  mkdir -p "${D}{HOME}/.ev_state" 2>/dev/null
-  __EV_RUNS=0
-  [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
-  case "${D}__EV_RUNS" in ''|*[!0-9]*) __EV_RUNS=0 ;; esac
-  if [ ${D}__EV_RUNS -ge ${D}__EV_MAX ]; then
-    printf '❌ 已达上限\n' >&2
-    if command -v shred >/dev/null 2>&1; then shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null; else rm -f "${D}__EV_SELF"; fi
-    exit 1
-  fi
-  echo $((__EV_RUNS+1)) > "${D}__EV_STATE"
-  chmod 600 "${D}__EV_STATE" 2>/dev/null
+    __EV_STATE="${D}{HOME}/.ev_state/${D}__EV_ID"
+    mkdir -p "${D}{HOME}/.ev_state" 2>/dev/null
+    __EV_RUNS=0
+    [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
+    case "${D}__EV_RUNS" in ''|*[!0-9]*) __EV_RUNS=0 ;; esac
+    if [ ${D}__EV_RUNS -ge ${D}__EV_MAX ]; then
+        printf '❌ 已达上限\n' >&2
+        if command -v shred >/dev/null 2>&1; then
+            shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null
+        else
+            rm -f "${D}__EV_SELF"
+        fi
+        exit 1
+    fi
+    echo $((__EV_RUNS+1)) > "${D}__EV_STATE"
+    chmod 600 "${D}__EV_STATE" 2>/dev/null
 fi
+
 chmod 700 "${D}{__EV_TMP}.sh" 2>/dev/null
 bash "${D}{__EV_TMP}.sh"
 __EV_RC=${D}?
@@ -495,9 +556,12 @@ exit ${D}__EV_RC
 
             of.writeText(tpl)
             of.setExecutable(true)
-            val hash = MessageDigest.getInstance("SHA-256").digest(of.readBytes()).hx()
+            val hash = MessageDigest.getInstance("SHA-256")
+                .digest(of.readBytes())
+                .hx()
             of.appendText("#HASH:$hash\n")
-            "✅ 加密成功 (v19)\n📄 ${of.absolutePath}"
+
+            "✅ 加密成功 (v21)\n📄 ${of.absolutePath}"
         } catch (e: Exception) {
             "❌ 失败: ${e.message}"
         }
@@ -523,7 +587,11 @@ exit ${D}__EV_RC
                 val c = Cipher.getInstance("AES/CBC/PKCS5Padding")
                 c.init(Cipher.DECRYPT_MODE, SecretKeySpec(pair.first, "AES"),
                     IvParameterSpec(pair.second))
-                val pl = try { c.doFinal(ct) } catch (_: Exception) { return@withContext "❌ 密码错" }
+                val pl = try {
+                    c.doFinal(ct)
+                } catch (_: Exception) {
+                    return@withContext "❌ 密码错"
+                }
                 val raw = op.trim().ifBlank { s.parent ?: "/sdcard" }
                 val on = s.name.removeSuffix("-protected.sh").let {
                     if (it.endsWith(".sh")) it else "$it-restored.sh"
