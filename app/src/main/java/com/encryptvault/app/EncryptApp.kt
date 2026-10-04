@@ -37,47 +37,34 @@ import androidx.compose.ui.unit.*
 import com.encryptvault.app.crypto.CryptoManager
 import com.encryptvault.app.crypto.FileItem
 import kotlinx.coroutines.*
-import kotlin.math.sin
 
-// ============================================================
-//  动漫配色常量
-// ============================================================
 object AnimeColors {
-    val Sakura = Color(0xFFFFB6D9)      // 樱花粉
-    val SakuraDeep = Color(0xFFFF6EC7)  // 深樱粉
-    val Lavender = Color(0xFFA78BFA)    // 薰衣草
+    val Sakura = Color(0xFFFFB6D9)
+    val SakuraDeep = Color(0xFFFF6EC7)
+    val Lavender = Color(0xFFA78BFA)
     val LavenderLight = Color(0xFFC4B5FD)
-    val Sky = Color(0xFF7DD3FC)         // 天空蓝
-    val Mint = Color(0xFF6EE7B7)        // 薄荷绿
-    val PurpleBg = Color(0xFF1A0B2E)    // 深紫背景
-    val PurpleBg2 = Color(0xFF2D1B4E)   // 中紫背景
-    val PurpleBg3 = Color(0xFF4A1F6F)   // 亮紫背景
-    val TextPrimary = Color(0xFFFFF5FA)  // 粉白
-    val TextSecondary = Color(0xFFE9D5FF) // 淡紫
+    val Sky = Color(0xFF7DD3FC)
+    val Mint = Color(0xFF6EE7B7)
+    val PurpleBg = Color(0xFF1A0B2E)
+    val PurpleBg2 = Color(0xFF2D1B4E)
+    val PurpleBg3 = Color(0xFF4A1F6F)
+    val TextPrimary = Color(0xFFFFF5FA)
+    val TextSecondary = Color(0xFFE9D5FF)
+    val Danger = Color(0xFFFF5252)
 }
 
-// ============================================================
-//  背景 — 粉紫星空 + 漂浮花瓣
-// ============================================================
 @Composable
 fun AnimeBackground(content: @Composable () -> Unit) {
     val bg = remember { Brush.linearGradient(listOf(
         AnimeColors.PurpleBg, AnimeColors.PurpleBg2,
         AnimeColors.PurpleBg3, AnimeColors.PurpleBg)) }
-    val glow1 = remember { Brush.radialGradient(listOf(
-        AnimeColors.SakuraDeep.copy(alpha = 0.42f), Color.Transparent)) }
-    val glow2 = remember { Brush.radialGradient(listOf(
-        AnimeColors.Lavender.copy(alpha = 0.30f), Color.Transparent)) }
-    val glow3 = remember { Brush.radialGradient(listOf(
-        AnimeColors.Sky.copy(alpha = 0.22f), Color.Transparent)) }
+    val glow1 = remember { Brush.radialGradient(listOf(AnimeColors.SakuraDeep.copy(0.42f), Color.Transparent)) }
+    val glow2 = remember { Brush.radialGradient(listOf(AnimeColors.Lavender.copy(0.30f), Color.Transparent)) }
     val trans = rememberInfiniteTransition(label = "ab")
     val shift by trans.animateFloat(0f, 800f,
         infiniteRepeatable(tween(50000, easing = LinearEasing)), label = "s")
     val breathe by trans.animateFloat(0.85f, 1.18f,
         infiniteRepeatable(tween(3800, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "b")
-    val rot by trans.animateFloat(0f, 360f,
-        infiniteRepeatable(tween(90000, easing = LinearEasing)), label = "r")
-
     Box(Modifier.fillMaxSize().background(bg)) {
         Box(Modifier.size(380.dp).graphicsLayer {
             translationX = shift * 1.1f; translationY = 60f
@@ -87,80 +74,28 @@ fun AnimeBackground(content: @Composable () -> Unit) {
             translationX = 1100f - shift * 0.85f; translationY = 540f + shift * 0.3f
             scaleX = breathe; scaleY = breathe
         }.background(glow2, CircleShape))
-        Box(Modifier.size(240.dp).graphicsLayer {
-            translationX = 200f + shift * 0.5f; translationY = 900f - shift * 0.4f
-            scaleX = breathe; scaleY = breathe
-        }.background(glow3, CircleShape))
-
-        // 漂浮 emoji 粒子
-        FloatingParticles()
-
-        // 旋转星环
-        Box(Modifier.fillMaxSize()) {
-            Box(Modifier.size(500.dp).align(Alignment.Center)
-                .graphicsLayer { rotationZ = rot }
-                .border(0.6.dp, AnimeColors.Sakura.copy(alpha = 0.08f), CircleShape))
-            Box(Modifier.size(380.dp).align(Alignment.Center)
-                .graphicsLayer { rotationZ = -rot * 0.7f }
-                .border(0.5.dp, AnimeColors.Lavender.copy(alpha = 0.06f), CircleShape))
-        }
-
         content()
     }
 }
 
 @Composable
-fun FloatingParticles() {
-    val trans = rememberInfiniteTransition(label = "fp")
-    val emojis = listOf("✨", "❤", "🌸", "⭐", "💫", "🎀")
-    for (i in 0 until 8) {
-        val delay = i * 300
-        val offsetY by trans.animateFloat(0f, 1200f,
-            infiniteRepeatable(tween(15000 + i * 1000, delayMillis = delay,
-                easing = LinearEasing), RepeatMode.Restart),
-            label = "fy$i")
-        val offsetX = (i * 137f) % 380f
-        val size = 14 + (i % 3) * 4
-        val alpha = 0.25f + (i % 4) * 0.12f
-        Text(
-            emojis[i % emojis.size],
-            modifier = Modifier
-                .offset(x = offsetX.dp, y = (200 + offsetY).dp)
-                .graphicsLayer { this.alpha = alpha },
-            fontSize = size.sp
-        )
-    }
-}
-
-// ============================================================
-//  玻璃卡片 — 粉紫渐变描边
-// ============================================================
-@Composable
-fun AnimeCard(
-    modifier: Modifier = Modifier, cornerRadius: Dp = 26.dp,
-    accent: Boolean = false, content: @Composable BoxScope.() -> Unit
-) {
-    val borderBrush = remember(accent) {
+fun AnimeCard(modifier: Modifier = Modifier, cornerRadius: Dp = 26.dp,
+    accent: Boolean = false, content: @Composable BoxScope.() -> Unit) {
+    val border = remember(accent) {
         if (accent) Brush.linearGradient(listOf(
-            AnimeColors.SakuraDeep.copy(alpha = 0.85f),
-            AnimeColors.Lavender.copy(alpha = 0.65f),
-            AnimeColors.Sky.copy(alpha = 0.55f),
-            AnimeColors.SakuraDeep.copy(alpha = 0.85f)
-        )) else Brush.linearGradient(listOf(
-            AnimeColors.Sakura.copy(alpha = 0.22f),
-            AnimeColors.Lavender.copy(alpha = 0.15f)))
-    }
-    val bgBrush = remember(accent) {
-        if (accent) Brush.linearGradient(listOf(
-            AnimeColors.SakuraDeep.copy(alpha = 0.10f),
-            AnimeColors.Lavender.copy(alpha = 0.06f)))
+            AnimeColors.SakuraDeep.copy(0.85f), AnimeColors.Lavender.copy(0.65f),
+            AnimeColors.Sky.copy(0.55f), AnimeColors.SakuraDeep.copy(0.85f)))
         else Brush.linearGradient(listOf(
-            Color.White.copy(alpha = 0.055f),
-            AnimeColors.Sakura.copy(alpha = 0.04f)))
+            AnimeColors.Sakura.copy(0.22f), AnimeColors.Lavender.copy(0.15f)))
+    }
+    val bgB = remember(accent) {
+        if (accent) Brush.linearGradient(listOf(
+            AnimeColors.SakuraDeep.copy(0.10f), AnimeColors.Lavender.copy(0.06f)))
+        else Brush.linearGradient(listOf(
+            Color.White.copy(0.055f), AnimeColors.Sakura.copy(0.04f)))
     }
     Box(modifier.clip(RoundedCornerShape(cornerRadius))
-        .background(bgBrush)
-        .border(1.dp, borderBrush, RoundedCornerShape(cornerRadius))
+        .background(bgB).border(1.dp, border, RoundedCornerShape(cornerRadius))
         .padding(18.dp), content = content)
 }
 
@@ -174,7 +109,7 @@ fun AnimeTextField(value: String, onValueChange: (String) -> Unit, label: String
             Text("✿", color = AnimeColors.SakuraDeep, fontSize = 11.sp)
             Spacer(Modifier.width(4.dp))
             Text(label, color = AnimeColors.TextSecondary, fontSize = 12.sp,
-                fontWeight = FontWeight.Bold, letterSpacing = 0.4.sp)
+                fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(7.dp))
         OutlinedTextField(value = value, onValueChange = onValueChange,
@@ -201,10 +136,8 @@ fun AnimeTextField(value: String, onValueChange: (String) -> Unit, label: String
     }
 }
 
-data class PasswordStrength(
-    val score: Float, val label: String, val color: Color, val hint: String,
-    val isWeak: Boolean = false
-)
+data class PasswordStrength(val score: Float, val label: String, val color: Color,
+    val hint: String, val isWeak: Boolean = false)
 
 fun evalPassword(p: String): PasswordStrength {
     if (p.isEmpty()) return PasswordStrength(0f, "", Color.Transparent, "", false)
@@ -213,12 +146,10 @@ fun evalPassword(p: String): PasswordStrength {
         "123456789","1234567890","111111","000000","00000000","666666","888888","123123",
         "112233","1q2w3e","1qaz2wsx","asdfgh","zxcvbn","qazwsx","159357","5201314",
         "admin123","root","toor","guest","test","test123","demo","changeme","password123")
-    if (p.lowercase() in common)
-        return PasswordStrength(0.1f, "禁用", Color(0xFFD32F2F),
-            "常见字典密码，请更换", true)
+    if (p.lowercase() in common) return PasswordStrength(0.1f, "禁用", Color(0xFFD32F2F),
+        "常见字典密码", true)
     if (p.length < 8 || p.all { it.isDigit() } || p.all { it.isLetter() } || p.all { it == p[0] })
-        return PasswordStrength(0.15f, "极弱", Color(0xFFE53935),
-            "太简单了，容易被破解", true)
+        return PasswordStrength(0.15f, "极弱", Color(0xFFE53935), "太简单", true)
     var s = 0
     if (p.length >= 8) s++
     if (p.length >= 12) s++
@@ -227,42 +158,33 @@ fun evalPassword(p: String): PasswordStrength {
     if (p.any { it.isDigit() }) s++
     if (p.any { !it.isLetterOrDigit() }) s++
     return when {
-        s <= 2 -> PasswordStrength(0.3f, "弱", Color(0xFFFF6584),
-            "建议 12 位以上含大小写+数字+符号", true)
-        s <= 3 -> PasswordStrength(0.55f, "中", Color(0xFFFFA726),
-            "再加符号或长度会更安全", false)
-        s <= 4 -> PasswordStrength(0.8f, "强", AnimeColors.Mint,
-            "不错，接近顶级", false)
-        else -> PasswordStrength(1f, "极强", AnimeColors.Sakura,
-            "顶级强度 ✓", false)
+        s <= 2 -> PasswordStrength(0.3f, "弱", Color(0xFFFF6584), "建议 12 位以上", true)
+        s <= 3 -> PasswordStrength(0.55f, "中", Color(0xFFFFA726), "加符号更安全", false)
+        s <= 4 -> PasswordStrength(0.8f, "强", AnimeColors.Mint, "接近顶级", false)
+        else -> PasswordStrength(1f, "极强", AnimeColors.Sakura, "顶级强度 ✓", false)
     }
 }
 
 @Composable
 fun AnimeStrengthBar(p: String) {
     val s = remember(p) { evalPassword(p) }
-    val animatedScore by animateFloatAsState(s.score, tween(500, easing = FastOutSlowInEasing), label = "ps")
-    val animatedColor by animateColorAsState(s.color, tween(500), label = "pc")
-    val pulse = rememberInfiniteTransition(label = "pl")
-    val pulseAlpha by pulse.animateFloat(0.75f, 1f,
-        infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pa")
+    val score by animateFloatAsState(s.score, tween(500), label = "ps")
+    val color by animateColorAsState(s.color, tween(500), label = "pc")
     Column {
         Box(Modifier.fillMaxWidth().height(6.dp)
             .clip(RoundedCornerShape(3.dp))
             .background(AnimeColors.PurpleBg.copy(0.6f))) {
-            Box(Modifier.fillMaxWidth(animatedScore).fillMaxHeight()
+            Box(Modifier.fillMaxWidth(score).fillMaxHeight()
                 .background(Brush.horizontalGradient(listOf(
-                    AnimeColors.SakuraDeep.copy(alpha = pulseAlpha * 0.8f),
-                    animatedColor.copy(alpha = pulseAlpha),
-                    AnimeColors.Sakura.copy(alpha = pulseAlpha))),
+                    AnimeColors.SakuraDeep, color, AnimeColors.Sakura)),
                     RoundedCornerShape(3.dp)))
         }
         if (s.label.isNotEmpty()) {
             Spacer(Modifier.height(7.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("✿", color = animatedColor, fontSize = 10.sp)
+                Text("✿", color = color, fontSize = 10.sp)
                 Spacer(Modifier.width(5.dp))
-                Text(s.label, color = animatedColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(s.label, color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(8.dp))
                 Text(s.hint, color = AnimeColors.TextSecondary.copy(0.65f), fontSize = 10.sp)
             }
@@ -270,11 +192,8 @@ fun AnimeStrengthBar(p: String) {
     }
 }
 
-// ============================================================
-//  主入口
-// ============================================================
 @Composable
-fun EncryptApp() {
+fun EncryptApp(securityReport: SecurityChecker.Report? = null) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val crypto = remember { CryptoManager(ctx) }
@@ -290,7 +209,6 @@ fun EncryptApp() {
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris -> uris.forEach { crypto.getFileInfo(it)?.let { f -> files = files + f } } }
-
     val dirPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri -> uri?.let { scope.launch { files = files + crypto.scanDirectory(it) } } }
@@ -310,11 +228,11 @@ fun EncryptApp() {
                     }
                     Spacer(Modifier.height(3.dp))
                     Text(when (selectedTab) {
-                        0 -> "✨ 20× 速度 · 2M 轮 · 顶级安全"
-                        1 -> "🎀 世界顶级源码保护 · v9"
-                        else -> "💫 Version 9.0.0 · 樱"
-                    }, fontSize = 11.sp, color = AnimeColors.Sakura, letterSpacing = 1.sp,
-                        fontWeight = FontWeight.Bold)
+                        0 -> "✨ v11 · 反逆向 12 项"
+                        1 -> "🎀 v11 · 自校验 + 设备绑定"
+                        else -> "💫 Version 11.0.0"
+                    }, fontSize = 11.sp, color = AnimeColors.Sakura,
+                        letterSpacing = 1.sp, fontWeight = FontWeight.Bold)
                 }
                 if (selectedTab == 0 && files.isNotEmpty()) {
                     IconButton(onClick = { files = emptyList(); statusText = "已清空" }) {
@@ -331,13 +249,13 @@ fun EncryptApp() {
                 ) { tab ->
                     when (tab) {
                         0 -> HomeTab(files, isProcessing, stageText, statusText, password, showPassword,
-                            onPasswordChange = { password = it },
+                            onPwdChange = { password = it },
                             onToggleShow = { showPassword = !showPassword },
                             onAddFile = { filePicker.launch(arrayOf("*/*")) },
                             onAddDir = { dirPicker.launch(null) },
                             onEncrypt = {
-                                val strength = evalPassword(password)
-                                if (strength.isWeak) statusText = "密码太弱 · 请更换"
+                                val st = evalPassword(password)
+                                if (st.isWeak) statusText = "密码太弱 · 请更换"
                                 else scope.launch {
                                     isProcessing = true; var ok = 0
                                     files.forEachIndexed { i, f ->
@@ -364,7 +282,7 @@ fun EncryptApp() {
                                 }
                             })
                         1 -> ShellTab(crypto)
-                        2 -> SettingsTab()
+                        2 -> SettingsTab(securityReport ?: SecurityChecker.check(ctx))
                     }
                 }
             }
@@ -390,20 +308,16 @@ fun AnimeTabBar(selected: Int, onSelect: (Int) -> Unit) {
                 infiniteRepeatable(tween(3500, easing = LinearEasing)), label = "tp")
             Box(Modifier.weight(1f).height(62.dp).scale(scale)
                 .clip(RoundedCornerShape(31.dp))
-                .background(
-                    if (active)
-                        Brush.linearGradient(listOf(
-                            AnimeColors.SakuraDeep, AnimeColors.Lavender,
-                            AnimeColors.Sky, AnimeColors.SakuraDeep),
-                            start = Offset(phase * 300f, 0f),
-                            end = Offset(phase * 300f + 300f, 300f))
+                .background(if (active)
+                    Brush.linearGradient(listOf(AnimeColors.SakuraDeep,
+                        AnimeColors.Lavender, AnimeColors.Sky, AnimeColors.SakuraDeep),
+                        start = Offset(phase * 300f, 0f),
+                        end = Offset(phase * 300f + 300f, 300f))
                     else Brush.linearGradient(listOf(
-                        AnimeColors.Sakura.copy(alpha = 0.08f),
-                        AnimeColors.Lavender.copy(alpha = 0.06f))))
+                        AnimeColors.Sakura.copy(0.08f), AnimeColors.Lavender.copy(0.06f))))
                 .border(if (active) 1.5.dp else 0.6.dp,
-                    if (active) AnimeColors.Sakura.copy(alpha = 0.9f)
-                    else AnimeColors.Lavender.copy(alpha = 0.18f),
-                    RoundedCornerShape(31.dp))
+                    if (active) AnimeColors.Sakura.copy(0.9f)
+                    else AnimeColors.Lavender.copy(0.18f), RoundedCornerShape(31.dp))
                 .clickable {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onSelect(i)
@@ -413,9 +327,8 @@ fun AnimeTabBar(selected: Int, onSelect: (Int) -> Unit) {
                         tint = if (active) Color.White else AnimeColors.TextSecondary.copy(0.7f),
                         modifier = Modifier.size(22.dp))
                     Spacer(Modifier.height(3.dp))
-                    Text(label, color = if (active) Color.White
-                        else AnimeColors.TextSecondary.copy(0.7f),
-                        fontSize = 10.sp, letterSpacing = 0.4.sp,
+                    Text(label, color = if (active) Color.White else AnimeColors.TextSecondary.copy(0.7f),
+                        fontSize = 10.sp,
                         fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
                 }
             }
@@ -427,14 +340,14 @@ fun AnimeTabBar(selected: Int, onSelect: (Int) -> Unit) {
 fun HomeTab(
     files: List<FileItem>, isProcessing: Boolean, stageText: String, statusText: String,
     password: String, showPassword: Boolean,
-    onPasswordChange: (String) -> Unit, onToggleShow: () -> Unit,
+    onPwdChange: (String) -> Unit, onToggleShow: () -> Unit,
     onAddFile: () -> Unit, onAddDir: () -> Unit,
     onEncrypt: () -> Unit, onDecrypt: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         AnimeCard(Modifier.fillMaxWidth(), accent = password.isNotEmpty()) {
             Column {
-                AnimeTextField(password, onPasswordChange, "加密密码",
+                AnimeTextField(password, onPwdChange, "加密密码",
                     "输入密码 · 建议 16 位以上", isPassword = true,
                     showPassword = showPassword, onToggleVisibility = onToggleShow)
                 if (password.isNotEmpty()) {
@@ -445,12 +358,10 @@ fun HomeTab(
         }
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            AnimeSmallButton("添加文件", Icons.Outlined.InsertDriveFile, Modifier.weight(1f), onAddFile)
-            AnimeSmallButton("添加目录", Icons.Outlined.FolderOpen, Modifier.weight(1f), onAddDir)
+            AnimeSmallBtn("添加文件", Icons.Outlined.InsertDriveFile, Modifier.weight(1f), onAddFile)
+            AnimeSmallBtn("添加目录", Icons.Outlined.FolderOpen, Modifier.weight(1f), onAddDir)
         }
-        AnimatedVisibility(visible = stageText.isNotEmpty(),
-            enter = fadeIn(tween(200)) + expandVertically(tween(200)),
-            exit = fadeOut(tween(150)) + shrinkVertically(tween(150))) {
+        AnimatedVisibility(visible = stageText.isNotEmpty()) {
             AnimeCard(Modifier.fillMaxWidth().padding(top = 12.dp), cornerRadius = 18.dp) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(16.dp),
@@ -462,35 +373,34 @@ fun HomeTab(
             }
         }
         AnimatedVisibility(visible = statusText.isNotEmpty() && stageText.isEmpty()) {
-            Row(Modifier.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(if (statusText.startsWith("完成") || statusText.startsWith("已清空")) "✨"
-                    else if (statusText.contains("失败") || statusText.contains("太弱")) "⚠️" else "⏳",
-                    fontSize = 13.sp)
-                Spacer(Modifier.width(6.dp))
-                Text(statusText, color = when {
-                    statusText.startsWith("完成") || statusText.startsWith("已清空") -> AnimeColors.Mint
-                    statusText.contains("失败") || statusText.contains("太弱") -> AnimeColors.SakuraDeep
-                    else -> AnimeColors.LavenderLight
-                }, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            }
+            Text(statusText, color = when {
+                statusText.startsWith("完成") || statusText.startsWith("已清空") -> AnimeColors.Mint
+                statusText.contains("失败") || statusText.contains("太弱") -> AnimeColors.SakuraDeep
+                else -> AnimeColors.LavenderLight
+            }, fontSize = 13.sp, modifier = Modifier.padding(vertical = 10.dp))
         }
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("🎀 已选文件", color = AnimeColors.TextSecondary.copy(0.8f), fontSize = 12.sp,
                 fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            Text("${files.size}", color = AnimeColors.Sakura, fontSize = 14.sp,
-                fontWeight = FontWeight.Black)
+            Text("${files.size}", color = AnimeColors.Sakura, fontSize = 14.sp, fontWeight = FontWeight.Black)
         }
         Spacer(Modifier.height(8.dp))
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (files.isEmpty()) item { EmptyAnimeHint() }
+            if (files.isEmpty()) item {
+                Box(Modifier.fillMaxWidth().padding(vertical = 50.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("🌸", fontSize = 40.sp)
+                        Spacer(Modifier.height(12.dp))
+                        Text("还没有添加文件", color = AnimeColors.TextPrimary,
+                            fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
             itemsIndexed(files, key = { _, f -> f.uri.toString() }) { i, f ->
                 var visible by remember(f.uri) { mutableStateOf(false) }
-                LaunchedEffect(f.uri) {
-                    delay((i.coerceAtMost(12)) * 45L)
-                    visible = true
-                }
+                LaunchedEffect(f.uri) { delay((i.coerceAtMost(12)) * 45L); visible = true }
                 AnimatedVisibility(visible = visible,
                     enter = fadeIn(tween(300)) + slideInVertically(
                         initialOffsetY = { it / 3 }, animationSpec = tween(300))) {
@@ -501,16 +411,16 @@ fun HomeTab(
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth().padding(bottom = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            AnimePrimaryButton("加密", Icons.Filled.Lock, !isProcessing && files.isNotEmpty(),
-                Modifier.weight(1f)) { onEncrypt() }
-            AnimeSecondaryButton("解密", Icons.Filled.LockOpen, !isProcessing && files.isNotEmpty(),
-                Modifier.weight(1f)) { onDecrypt() }
+            AnimePrimaryBtn("加密", Icons.Filled.Lock,
+                !isProcessing && files.isNotEmpty(), Modifier.weight(1f)) { onEncrypt() }
+            AnimeSecondaryBtn("解密", Icons.Filled.LockOpen,
+                !isProcessing && files.isNotEmpty(), Modifier.weight(1f)) { onDecrypt() }
         }
     }
 }
 
 @Composable
-fun AnimePrimaryButton(text: String, icon: ImageVector, enabled: Boolean,
+fun AnimePrimaryBtn(text: String, icon: ImageVector, enabled: Boolean,
     modifier: Modifier, onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
@@ -519,19 +429,18 @@ fun AnimePrimaryButton(text: String, icon: ImageVector, enabled: Boolean,
     val trans = rememberInfiniteTransition(label = "pb")
     val phase by trans.animateFloat(0f, 1f,
         infiniteRepeatable(tween(4000, easing = LinearEasing)), label = "p")
-    Box(modifier = modifier.height(58.dp).scale(scale)
+    Box(modifier.height(58.dp).scale(scale)
         .clip(RoundedCornerShape(20.dp))
         .background(if (enabled)
-            Brush.linearGradient(listOf(
-                AnimeColors.SakuraDeep, AnimeColors.Lavender,
+            Brush.linearGradient(listOf(AnimeColors.SakuraDeep, AnimeColors.Lavender,
                 AnimeColors.Sky, AnimeColors.SakuraDeep),
                 start = Offset(phase * 200f, 0f),
                 end = Offset(phase * 200f + 300f, 200f))
             else Brush.linearGradient(listOf(
                 AnimeColors.Lavender.copy(0.15f), AnimeColors.Lavender.copy(0.15f))))
         .border(if (enabled) 1.dp else 0.5.dp,
-            if (enabled) AnimeColors.Sakura.copy(alpha = 0.85f)
-            else AnimeColors.Lavender.copy(alpha = 0.25f), RoundedCornerShape(20.dp))
+            if (enabled) AnimeColors.Sakura.copy(0.85f) else AnimeColors.Lavender.copy(0.25f),
+            RoundedCornerShape(20.dp))
         .clickable(interactionSource = interaction, indication = null, enabled = enabled) {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick()
         }, contentAlignment = Alignment.Center) {
@@ -540,82 +449,53 @@ fun AnimePrimaryButton(text: String, icon: ImageVector, enabled: Boolean,
                 modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
             Text(text, color = Color.White.copy(if (enabled) 1f else 0.4f),
-                fontWeight = FontWeight.Black, fontSize = 16.sp, letterSpacing = 0.6.sp)
+                fontWeight = FontWeight.Black, fontSize = 16.sp)
         }
     }
 }
 
 @Composable
-fun AnimeSecondaryButton(text: String, icon: ImageVector, enabled: Boolean,
+fun AnimeSecondaryBtn(text: String, icon: ImageVector, enabled: Boolean,
     modifier: Modifier, onClick: () -> Unit) {
-    val haptic = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.95f else 1f, tween(120), label = "s")
-    Box(modifier = modifier.height(58.dp).scale(scale)
+    Box(modifier.height(58.dp).scale(scale)
         .clip(RoundedCornerShape(20.dp))
         .background(Brush.linearGradient(listOf(
-            AnimeColors.Lavender.copy(alpha = if (enabled) 0.20f else 0.1f),
-            AnimeColors.Sakura.copy(alpha = if (enabled) 0.15f else 0.08f))))
-        .border(0.8.dp, AnimeColors.Sakura.copy(alpha = if (enabled) 0.5f else 0.2f),
+            AnimeColors.Lavender.copy(if (enabled) 0.20f else 0.1f),
+            AnimeColors.Sakura.copy(if (enabled) 0.15f else 0.08f))))
+        .border(0.8.dp, AnimeColors.Sakura.copy(if (enabled) 0.5f else 0.2f),
             RoundedCornerShape(20.dp))
         .clickable(interactionSource = interaction, indication = null, enabled = enabled) {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick()
+            onClick()
         }, contentAlignment = Alignment.Center) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = AnimeColors.TextPrimary.copy(if (enabled) 0.95f else 0.4f),
                 modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
             Text(text, color = AnimeColors.TextPrimary.copy(if (enabled) 0.95f else 0.4f),
-                fontWeight = FontWeight.Black, fontSize = 16.sp, letterSpacing = 0.6.sp)
+                fontWeight = FontWeight.Black, fontSize = 16.sp)
         }
     }
 }
 
 @Composable
-fun AnimeSmallButton(text: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+fun AnimeSmallBtn(text: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.96f else 1f, tween(100), label = "s")
-    Box(modifier = modifier.height(50.dp).scale(scale)
+    Box(modifier.height(50.dp).scale(scale)
         .clip(RoundedCornerShape(16.dp))
         .background(Brush.linearGradient(listOf(
-            AnimeColors.Sakura.copy(alpha = 0.12f),
-            AnimeColors.Lavender.copy(alpha = 0.10f))))
-        .border(0.8.dp, AnimeColors.Sakura.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+            AnimeColors.Sakura.copy(0.12f), AnimeColors.Lavender.copy(0.10f))))
+        .border(0.8.dp, AnimeColors.Sakura.copy(0.35f), RoundedCornerShape(16.dp))
         .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = AnimeColors.Sakura, modifier = Modifier.size(17.dp))
             Spacer(Modifier.width(6.dp))
-            Text(text, color = AnimeColors.TextPrimary, fontSize = 13.sp,
-                fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
-fun EmptyAnimeHint() {
-    val trans = rememberInfiniteTransition(label = "eh")
-    val pulse by trans.animateFloat(0.85f, 1.15f,
-        infiniteRepeatable(tween(2200, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "ep")
-    Box(Modifier.fillMaxWidth().padding(vertical = 50.dp), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.size(90.dp).graphicsLayer { scaleX = pulse; scaleY = pulse }
-                .clip(CircleShape)
-                .background(Brush.radialGradient(listOf(
-                    AnimeColors.SakuraDeep.copy(alpha = 0.35f),
-                    AnimeColors.Lavender.copy(alpha = 0.15f),
-                    Color.Transparent))),
-                contentAlignment = Alignment.Center) {
-                Text("🌸", fontSize = 40.sp)
-            }
-            Spacer(Modifier.height(18.dp))
-            Text("还没有添加文件", color = AnimeColors.TextPrimary, fontSize = 16.sp,
-                fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text("点上方按钮或右下角 + 添加 ✨", color = AnimeColors.TextSecondary.copy(0.65f),
-                fontSize = 12.sp, textAlign = TextAlign.Center)
+            Text(text, color = AnimeColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -624,9 +504,8 @@ fun EmptyAnimeHint() {
 fun FileRowAnime(file: FileItem) {
     Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
         .background(Brush.linearGradient(listOf(
-            AnimeColors.Sakura.copy(alpha = 0.07f),
-            AnimeColors.Lavender.copy(alpha = 0.05f))))
-        .border(0.8.dp, AnimeColors.Sakura.copy(alpha = 0.22f), RoundedCornerShape(16.dp))
+            AnimeColors.Sakura.copy(0.07f), AnimeColors.Lavender.copy(0.05f))))
+        .border(0.8.dp, AnimeColors.Sakura.copy(0.22f), RoundedCornerShape(16.dp))
         .padding(horizontal = 14.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(42.dp).clip(RoundedCornerShape(13.dp))
@@ -659,6 +538,8 @@ fun ShellTab(crypto: CryptoManager) {
     var password2 by remember { mutableStateOf("") }
     var showPwd by remember { mutableStateOf(false) }
     var passwordMode by remember { mutableStateOf(true) }
+    var deviceBind by remember { mutableStateOf(true) }
+    var validDaysText by remember { mutableStateOf("7") }
     var maxRunsText by remember { mutableStateOf("0") }
     var failLimitText by remember { mutableStateOf("3") }
     var advanced by remember { mutableStateOf(false) }
@@ -675,17 +556,14 @@ fun ShellTab(crypto: CryptoManager) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(48.dp).clip(RoundedCornerShape(15.dp))
                         .background(Brush.linearGradient(listOf(
-                            AnimeColors.SakuraDeep.copy(0.55f),
-                            AnimeColors.Lavender.copy(0.5f)))),
-                        contentAlignment = Alignment.Center) {
-                        Text("🛡️", fontSize = 24.sp)
-                    }
+                            AnimeColors.SakuraDeep.copy(0.55f), AnimeColors.Lavender.copy(0.5f)))),
+                        contentAlignment = Alignment.Center) { Text("🛡️", fontSize = 24.sp) }
                     Spacer(Modifier.width(14.dp))
                     Column {
-                        Text("世界顶级源码保护", color = AnimeColors.TextPrimary,
+                        Text("v11 世界顶级源码保护", color = AnimeColors.TextPrimary,
                             fontWeight = FontWeight.Black, fontSize = 17.sp)
                         Spacer(Modifier.height(3.dp))
-                        Text("✨ PBKDF2-SHA512 · 2M 轮 · v9",
+                        Text("✨ 反逆向 12 项 · 自校验 · 设备绑定",
                             color = AnimeColors.Sakura, fontSize = 11.sp,
                             letterSpacing = 0.8.sp, fontWeight = FontWeight.Bold)
                     }
@@ -696,24 +574,13 @@ fun ShellTab(crypto: CryptoManager) {
         item {
             AnimeCard(Modifier.fillMaxWidth()) {
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("✿", color = AnimeColors.SakuraDeep, fontSize = 11.sp)
-                        Spacer(Modifier.width(4.dp))
-                        Text("保护模式", color = AnimeColors.TextSecondary, fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold)
-                    }
+                    Text("保护模式", color = AnimeColors.TextSecondary, fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(10.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         AnimeModeChip("🔐 密码模式", passwordMode, Modifier.weight(1f)) { passwordMode = true }
                         AnimeModeChip("⚡ 无密码", !passwordMode, Modifier.weight(1f)) { passwordMode = false }
                     }
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        if (passwordMode)
-                            "运行时需输密码。PBKDF2-SHA512 2M 轮派生，脚本内零密钥。"
-                        else
-                            "运行时直接执行。48 字节材料经 96 次 XOR 循环混淆后分片存储，逆向难度极高。",
-                        color = AnimeColors.TextSecondary.copy(0.7f), fontSize = 11.sp, lineHeight = 17.sp)
                 }
             }
         }
@@ -734,17 +601,15 @@ fun ShellTab(crypto: CryptoManager) {
             item {
                 AnimeCard(Modifier.fillMaxWidth(), accent = password.isNotEmpty()) {
                     Column {
-                        AnimeTextField(password, { password = it },
-                            "保护密码 (至少 12 位)", "输入强密码",
-                            isPassword = true, showPassword = showPwd,
+                        AnimeTextField(password, { password = it }, "保护密码 (至少 12 位)",
+                            "输入强密码", isPassword = true, showPassword = showPwd,
                             onToggleVisibility = { showPwd = !showPwd })
                         if (password.isNotEmpty()) {
                             Spacer(Modifier.height(12.dp))
                             AnimeStrengthBar(password)
                         }
                         Spacer(Modifier.height(12.dp))
-                        AnimeTextField(password2, { password2 = it },
-                            "确认密码", "再输一次",
+                        AnimeTextField(password2, { password2 = it }, "确认密码", "再输一次",
                             isPassword = true, showPassword = showPwd)
                     }
                 }
@@ -760,26 +625,41 @@ fun ShellTab(crypto: CryptoManager) {
                         Spacer(Modifier.width(8.dp))
                         Text("高级安全选项", color = AnimeColors.TextPrimary,
                             fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.weight(1f))
-                        Text("次数: ${maxRunsText.ifBlank{"0"}} · 自毁: ${failLimitText.ifBlank{"0"}}",
-                            color = AnimeColors.TextSecondary.copy(0.6f), fontSize = 11.sp)
                     }
                     AnimatedVisibility(visible = advanced) {
                         Column {
                             Spacer(Modifier.height(14.dp))
-                            AnimeTextField(maxRunsText, { maxRunsText = it.filter { c -> c.isDigit() } },
+                            if (!passwordMode) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Switch(checked = deviceBind, onCheckedChange = { deviceBind = it },
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = AnimeColors.SakuraDeep,
+                                            checkedTrackColor = AnimeColors.Sakura.copy(0.3f)))
+                                    Spacer(Modifier.width(10.dp))
+                                    Column {
+                                        Text("设备绑定", color = AnimeColors.TextPrimary,
+                                            fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                        Text("换机后无法运行, 密钥与设备指纹绑定",
+                                            color = AnimeColors.TextSecondary.copy(0.6f), fontSize = 10.sp)
+                                    }
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                AnimeTextField(validDaysText,
+                                    { validDaysText = it.filter { c -> c.isDigit() } },
+                                    "有效天数 (0 = 永不过期)", "7", isNumber = true)
+                                Spacer(Modifier.height(12.dp))
+                            }
+                            AnimeTextField(maxRunsText,
+                                { maxRunsText = it.filter { c -> c.isDigit() } },
                                 "最大执行次数 (0 = 无限)", "0", isNumber = true)
                             Spacer(Modifier.height(4.dp))
-                            Text("超限后自动 shred 覆盖 3 遍销毁自身",
+                            Text("超限后 shred 覆盖销毁自身",
                                 color = AnimeColors.TextSecondary.copy(0.6f), fontSize = 11.sp)
                             Spacer(Modifier.height(12.dp))
                             if (passwordMode) {
                                 AnimeTextField(failLimitText,
                                     { failLimitText = it.filter { c -> c.isDigit() } },
                                     "密码错误自毁阈值 (0 = 关闭)", "3", isNumber = true)
-                                Spacer(Modifier.height(4.dp))
-                                Text("连续输错 N 次后自动销毁自身",
-                                    color = AnimeColors.TextSecondary.copy(0.6f), fontSize = 11.sp)
                             }
                         }
                     }
@@ -789,24 +669,26 @@ fun ShellTab(crypto: CryptoManager) {
 
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                AnimePrimaryButton("加密", Icons.Filled.Lock, !isWorking, Modifier.weight(1f)) {
+                AnimePrimaryBtn("加密", Icons.Filled.Lock, !isWorking, Modifier.weight(1f)) {
                     val maxRuns = maxRunsText.toIntOrNull() ?: 0
                     val failLimit = failLimitText.toIntOrNull() ?: 0
+                    val validDays = validDaysText.toIntOrNull() ?: 7
                     when {
                         inputPath.isBlank() -> result = "❌ 请输入源文件路径"
                         passwordMode && password.length < 12 -> result = "❌ 密码至少 12 位"
-                        passwordMode && evalPassword(password).isWeak -> result = "❌ 密码太弱，请更换"
-                        passwordMode && password != password2 -> result = "❌ 两次密码不一致"
+                        passwordMode && evalPassword(password).isWeak -> result = "❌ 密码太弱"
+                        passwordMode && password != password2 -> result = "❌ 两次不一致"
                         else -> scope.launch {
-                            isWorking = true; result = "✨ 正在派生密钥 (约 3 秒)..."
+                            isWorking = true; result = "✨ 正在加密..."
                             result = crypto.protectShellScript(
                                 inputPath, outputPath, password,
-                                passwordMode, maxRuns, failLimit)
+                                passwordMode, maxRuns, failLimit,
+                                deviceBind, validDays)
                             isWorking = false
                         }
                     }
                 }
-                AnimeSecondaryButton("解保护", Icons.Filled.LockOpen, !isWorking, Modifier.weight(1f)) {
+                AnimeSecondaryBtn("解保护", Icons.Filled.LockOpen, !isWorking, Modifier.weight(1f)) {
                     when {
                         inputPath.isBlank() -> result = "❌ 请输入保护脚本路径"
                         else -> scope.launch {
@@ -832,16 +714,15 @@ fun ShellTab(crypto: CryptoManager) {
 fun AnimeModeChip(text: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
     val scale by animateFloatAsState(if (active) 1f else 0.97f, tween(180), label = "m")
-    Box(modifier = modifier.height(50.dp).scale(scale)
+    Box(modifier.height(50.dp).scale(scale)
         .clip(RoundedCornerShape(16.dp))
         .background(if (active)
             Brush.linearGradient(listOf(AnimeColors.SakuraDeep, AnimeColors.Lavender))
             else Brush.linearGradient(listOf(
                 AnimeColors.Lavender.copy(0.12f), AnimeColors.Sakura.copy(0.08f))))
         .border(if (active) 1.2.dp else 0.6.dp,
-            if (active) AnimeColors.Sakura.copy(alpha = 0.85f)
-            else AnimeColors.Lavender.copy(alpha = 0.25f),
-            RoundedCornerShape(16.dp))
+            if (active) AnimeColors.Sakura.copy(0.85f)
+            else AnimeColors.Lavender.copy(0.25f), RoundedCornerShape(16.dp))
         .clickable { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() },
         contentAlignment = Alignment.Center) {
         Text(text, color = if (active) Color.White else AnimeColors.TextSecondary,
@@ -850,7 +731,7 @@ fun AnimeModeChip(text: String, active: Boolean, modifier: Modifier, onClick: ()
 }
 
 @Composable
-fun SettingsTab() {
+fun SettingsTab(securityReport: SecurityChecker.Report) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 12.dp)) {
@@ -861,99 +742,127 @@ fun SettingsTab() {
                     Box(Modifier.size(52.dp).clip(RoundedCornerShape(16.dp))
                         .background(Brush.linearGradient(listOf(
                             AnimeColors.SakuraDeep, AnimeColors.Lavender, AnimeColors.Sky))),
-                        contentAlignment = Alignment.Center) {
-                        Text("💎", fontSize = 26.sp)
-                    }
+                        contentAlignment = Alignment.Center) { Text("🛡️", fontSize = 26.sp) }
                     Spacer(Modifier.width(14.dp))
                     Column {
-                        Text("世界顶级加密", color = AnimeColors.TextPrimary,
+                        Text(if (securityReport.clean) "环境安全" else "环境存在风险",
+                            color = if (securityReport.clean) AnimeColors.Mint else AnimeColors.Danger,
                             fontWeight = FontWeight.Black, fontSize = 18.sp)
                         Spacer(Modifier.height(3.dp))
-                        Text("✨ v9 · PBKDF2-SHA512 · 2M 轮",
+                        Text("APK 内嵌反逆向 · 实时检测 7 项",
                             color = AnimeColors.Sakura, fontSize = 11.sp,
-                            letterSpacing = 0.8.sp, fontWeight = FontWeight.Bold)
+                            fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
 
-        item { AnimeCard(Modifier.fillMaxWidth()) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("🔐", fontSize = 16.sp)
-                    Spacer(Modifier.width(6.dp))
+        item {
+            AnimeCard(Modifier.fillMaxWidth()) {
+                Column {
+                    Text("🛡️ 环境检测", color = AnimeColors.TextPrimary,
+                        fontWeight = FontWeight.Black, fontSize = 15.sp)
+                    Spacer(Modifier.height(10.dp))
+                    SecRow("Root", securityReport.root)
+                    SecRow("Frida", securityReport.frida)
+                    SecRow("Xposed", securityReport.xposed)
+                    SecRow("调试器", securityReport.debugger)
+                    SecRow("模拟器", securityReport.emulator)
+                    SecRow("虚拟多开", securityReport.virtualApp)
+                    SecRow("APK 签名", securityReport.signatureValid)
+                }
+            }
+        }
+
+        if (!securityReport.clean) {
+            item {
+                AnimeCard(Modifier.fillMaxWidth()) {
+                    Column {
+                        Text("⚠️ 检测到风险", color = AnimeColors.Danger,
+                            fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Spacer(Modifier.height(8.dp))
+                        securityReport.issues.forEach { issue ->
+                            Text("· $issue", color = AnimeColors.TextPrimary,
+                                fontSize = 12.sp, lineHeight = 20.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            AnimeCard(Modifier.fillMaxWidth()) {
+                Column {
+                    Text("🔒 Shell 保护反逆向 (12 项)", color = AnimeColors.TextPrimary,
+                        fontWeight = FontWeight.Black, fontSize = 15.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Text("· 反调试 (bash -x / XTRACEFD / SHELLOPTS / PS4)\n" +
+                        "· TracerPid 检测 (strace/ltrace)\n" +
+                        "· LD_PRELOAD 检测\n" +
+                        "· 拒绝被 source\n" +
+                        "· 拒绝软链接运行\n" +
+                        "· 父进程检测 (sed/awk/grep/strace/python 等)\n" +
+                        "· 关键命令被覆盖检测\n" +
+                        "· SHA256 自校验 (改动即拒绝)\n" +
+                        "· 三层密钥变换 (XOR + 反序 + CONST)\n" +
+                        "· 设备指纹绑定 (可选)\n" +
+                        "· 时间窗口 (可选)\n" +
+                        "· shred × 2 自毁",
+                        color = AnimeColors.TextSecondary.copy(0.85f),
+                        fontSize = 12.sp, lineHeight = 19.sp)
+                }
+            }
+        }
+
+        item {
+            AnimeCard(Modifier.fillMaxWidth()) {
+                Column {
                     Text("加密参数", color = AnimeColors.TextPrimary,
                         fontWeight = FontWeight.Black, fontSize = 15.sp)
+                    Spacer(Modifier.height(8.dp))
+                    InfoRow("文件算法", "AES-256-GCM")
+                    InfoRow("文件 PRF", "PBKDF2-HMAC-SHA512")
+                    InfoRow("文件轮数", "2,000,000")
+                    InfoRow("Shell 算法", "AES-256-CBC")
+                    InfoRow("Shell 密钥", "PBKDF2-SHA512 · 2M")
+                    InfoRow("无密码变换", "三层 (XOR+反序+CONST)")
+                    InfoRow("自毁方式", "shred × 2")
                 }
-                Spacer(Modifier.height(12.dp))
-                AnimeInfo("文件算法", "AES-256-GCM")
-                AnimeInfo("文件 PRF", "PBKDF2-HMAC-SHA512")
-                AnimeInfo("文件轮数", "2,000,000")
-                AnimeInfo("文件子密钥", "HKDF-SHA256")
-                AnimeInfo("Shell 算法", "AES-256-CBC")
-                AnimeInfo("Shell 密钥", "PBKDF2-SHA512 · 2M")
-                AnimeInfo("无密码混淆", "48B · XOR · 6 分片")
-                AnimeInfo("抗字典", "Top 200 黑名单")
-                AnimeInfo("自毁方式", "shred × 3")
             }
-        } }
+        }
 
-        item { AnimeCard(Modifier.fillMaxWidth()) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("⚡", fontSize = 16.sp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("20× 加速原理", color = AnimeColors.TextPrimary,
-                        fontWeight = FontWeight.Black, fontSize = 15.sp)
-                }
-                Spacer(Modifier.height(10.dp))
-                Text("分层密钥派生：首次加密用 PBKDF2-SHA512 2M 轮派生出会话主密钥 (约 3 秒)，之后每文件用 HKDF-SHA256 从主密钥派生独立子密钥 (约 0.1ms)。加密 20 个文件总耗时从 60 秒降到 3 秒。",
-                    color = AnimeColors.TextSecondary.copy(0.85f), fontSize = 12.sp, lineHeight = 19.sp)
-                Spacer(Modifier.height(10.dp))
-                Text("安全性未降低：主密钥派生轮数保持 2M，每文件独立 salt，HKDF 是单向不可逆函数。",
-                    color = AnimeColors.TextSecondary.copy(0.85f), fontSize = 12.sp, lineHeight = 19.sp)
-            }
-        } }
-
-        item { AnimeCard(Modifier.fillMaxWidth()) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("🛡️", fontSize = 16.sp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("无密码模式 (v9 全新)", color = AnimeColors.TextPrimary,
-                        fontWeight = FontWeight.Black, fontSize = 15.sp)
-                }
-                Spacer(Modifier.height(10.dp))
-                Text("48 字节密钥材料 (32B key + 16B IV) 通过 32 字节固定 R 循环 XOR 混淆成 96 字符 hex，再切成 6 段分散存储。运行时需 6 段拼接 + 96 次 XOR + hex 解码 + 拆分。",
-                    color = AnimeColors.TextSecondary.copy(0.85f), fontSize = 12.sp, lineHeight = 19.sp)
-                Spacer(Modifier.height(10.dp))
-                Text("逆向需要完整理解 Shell 语法 + XOR 循环结构，对普通脚本买家来说难度极高。适合外挂分发、无密码场景。",
-                    color = AnimeColors.TextSecondary.copy(0.85f), fontSize = 12.sp, lineHeight = 19.sp)
-            }
-        } }
-
-        item { AnimeCard(Modifier.fillMaxWidth()) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("🌸", fontSize = 16.sp)
-                    Spacer(Modifier.width(6.dp))
+        item {
+            AnimeCard(Modifier.fillMaxWidth()) {
+                Column {
                     Text("关于", color = AnimeColors.TextPrimary,
                         fontWeight = FontWeight.Black, fontSize = 15.sp)
+                    Spacer(Modifier.height(8.dp))
+                    InfoRow("应用", "EncryptVault")
+                    InfoRow("版本", "11.0.0")
+                    InfoRow("网络", "零联网")
+                    InfoRow("数据", "零收集")
                 }
-                Spacer(Modifier.height(8.dp))
-                AnimeInfo("应用", "EncryptVault")
-                AnimeInfo("版本", "9.0.0 · 樱")
-                AnimeInfo("网络", "零联网")
-                AnimeInfo("数据", "零收集")
-                AnimeInfo("下载", "16 连接 · aria2c")
-                AnimeInfo("兼容", "Termux / MT / Linux")
             }
-        } }
+        }
     }
 }
 
 @Composable
-fun AnimeInfo(k: String, v: String) {
+fun SecRow(label: String, ok: Boolean) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Text(if (ok) "✅" else "❌", fontSize = 13.sp)
+        Spacer(Modifier.width(8.dp))
+        Text(label, color = AnimeColors.TextPrimary, fontSize = 12.sp)
+        Spacer(Modifier.weight(1f))
+        Text(if (ok) "通过" else "异常",
+            color = if (ok) AnimeColors.Mint else AnimeColors.Danger,
+            fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun InfoRow(k: String, v: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Text("✿", color = AnimeColors.SakuraDeep.copy(0.7f), fontSize = 9.sp)

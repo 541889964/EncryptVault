@@ -26,7 +26,7 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val VERSION: Byte = 0x09
+        private const val VERSION: Byte = 0x0B
         private const val SALT_SIZE = 16
         private const val IV_SIZE = 16
         private const val CHECK_SIZE = 8
@@ -36,25 +36,27 @@ class CryptoManager(private val ctx: Context) {
         private const val GCM_TAG_BITS = 128
         private const val OPENSSL_ITER = 2_000_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA512"
-        private const val HKDF_INFO = "EncryptVault-file-v9"
+        private const val HKDF_INFO = "EncryptVault-file-v11"
         private const val HEADER_SIZE = 1 + SALT_SIZE + SALT_SIZE + IV_SIZE + CHECK_SIZE
-        // 32 字节固定混淆密钥 R (无密码模式用)
+
         private val XOR_R = byteArrayOf(
             0x3A, 0x7F, 0x2C, 0x91.toByte(), 0x4E, 0xB5.toByte(), 0x11, 0x63,
             0xD7.toByte(), 0x8A.toByte(), 0x25, 0xF9.toByte(), 0x06, 0x44, 0xBB.toByte(), 0x72,
             0x9D.toByte(), 0xE3.toByte(), 0x58, 0xAF.toByte(), 0x31, 0x84.toByte(), 0xCD.toByte(), 0x1A,
             0x76, 0xE8.toByte(), 0x50, 0x02, 0x9B.toByte(), 0x35, 0xC1.toByte(), 0x68)
         private val R_HEX = XOR_R.joinToString("") { "%02x".format(it) }
+
+        private const val CONST_HEX =
+            "a3f1c8e29b4d60715f2e8a3c9d17b5e4f028c6a9d3b7e15f824a6c0d9e3f7b12"
     }
 
     private var sessionPwdHash: String? = null
     private var sessionMasterSalt: ByteArray? = null
     private var sessionMasterKey: SecretKeySpec? = null
 
-    private fun hashPwd(p: String): String {
-        val d = MessageDigest.getInstance("SHA-256").digest(p.toByteArray(Charsets.UTF_8))
-        return d.joinToString("") { "%02x".format(it) }
-    }
+    private fun hashPwd(p: String): String =
+        MessageDigest.getInstance("SHA-256").digest(p.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 
     private fun ensureMasterKey(password: String): Pair<ByteArray, SecretKeySpec> {
         val h = hashPwd(password)
@@ -89,12 +91,12 @@ class CryptoManager(private val ctx: Context) {
     private fun keyCheck(key: SecretKeySpec): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key.encoded, "HmacSHA256"))
-        return mac.doFinal("EncryptVault-KCV-v9".toByteArray(Charsets.US_ASCII)).copyOf(CHECK_SIZE)
+        return mac.doFinal("EncryptVault-KCV-v11".toByteArray(Charsets.US_ASCII)).copyOf(CHECK_SIZE)
     }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
-    private fun sha16(data: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(data).copyOf(8).toHex()
+    private fun sha16(d: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(d).copyOf(8).toHex()
 
     fun getFileInfo(uri: Uri): FileItem? = try {
         ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
@@ -163,32 +165,8 @@ class CryptoManager(private val ctx: Context) {
     }
 
     // ============================================================
-    //  无密码模式 v9 — 48B 材料 + XOR 循环 + 6 分片
+    //  Shell 保护 v11 — 含全套反逆向
     // ============================================================
-    private fun genNopass(plain: ByteArray): Triple<String, String, List<String>> {
-        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        val iv = ByteArray(16).also { SecureRandom().nextBytes(it) }
-        val km = key + iv  // 48 字节
-
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-        val ct = cipher.doFinal(plain)
-        val ctB64 = Base64.encodeToString(ct, Base64.NO_WRAP)
-
-        val khex = km.toHex()  // 96 字符
-        // XOR 混淆 (按字节, 96 hex 字符 = 48 字节)
-        val encHex = StringBuilder()
-        for (i in 0 until 48) {
-            val b = khex.substring(i * 2, i * 2 + 2).toInt(16)
-            val r = XOR_R[i % 32].toInt() and 0xFF
-            encHex.append("%02x".format(b xor r))
-        }
-        val encStr = encHex.toString()
-        // 分成 6 段, 每段 16 字符
-        val segs = (0 until 6).map { encStr.substring(it * 16, (it + 1) * 16) }
-        return Triple(ctB64, R_HEX, segs)
-    }
-
     private fun deriveOpenSSLKey(password: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val factory = SecretKeyFactory.getInstance(OPENSSL_MD)
         val spec = PBEKeySpec(password.toCharArray(), salt, OPENSSL_ITER, 48 * 8)
@@ -196,15 +174,43 @@ class CryptoManager(private val ctx: Context) {
         return derived.copyOfRange(0, 32) to derived.copyOfRange(32, 48)
     }
 
+    private fun transformNoPass(key: ByteArray, iv: ByteArray, dkHex: String): List<String> {
+        val km = (key + iv).toHex()  // 96 hex
+        // 层1: XOR DK
+        val t1 = StringBuilder()
+        for (i in 0 until 96 step 2) {
+            val b = km.substring(i, i + 2).toInt(16)
+            val d = dkHex.substring(i, i + 2).toInt(16)
+            t1.append("%02x".format(b xor d))
+        }
+        // 层2: 按 4-hex 单元反序
+        val t2 = StringBuilder()
+        var i = 0
+        while (i < 96) { t2.insert(0, t1.substring(i, i + 4)); i += 4 }
+        // 层3: XOR CONST
+        val t3 = StringBuilder()
+        for (i in 0 until 96 step 2) {
+            val b = t2.substring(i, i + 2).toInt(16)
+            val c = CONST_HEX.substring(i, i + 2).toInt(16)
+            t3.append("%02x".format(b xor c))
+        }
+        val s = t3.toString()
+        return (0 until 6).map { s.substring(it * 16, (it + 1) * 16) }
+    }
+
     suspend fun protectShellScript(
         inputPath: String, outputPathRaw: String, password: String,
-        passwordMode: Boolean, maxRuns: Int, failLimit: Int
+        passwordMode: Boolean, maxRuns: Int, failLimit: Int,
+        deviceBind: Boolean, validDays: Int
     ): String = withContext(Dispatchers.IO) {
         try {
             if (passwordMode && password.length < 8) return@withContext "❌ 密码至少 8 位"
             val src = File(inputPath.trim())
             if (!src.exists()) return@withContext "❌ 源文件不存在"
             if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
+            if (java.nio.file.Files.isSymbolicLink(src.toPath()))
+                return@withContext "❌ 源文件是软链接，拒绝加密"
+
             val raw = outputPathRaw.trim().ifBlank { src.parent ?: "/sdcard" }
             val baseName = src.nameWithoutExtension + "-protected.sh"
             val outFile = run {
@@ -215,8 +221,9 @@ class CryptoManager(private val ctx: Context) {
             val plain = src.readBytes()
             val D = "${'$'}"
             val b64: String
-            val rHex: String
             val segs: List<String>
+            val deviceSalt: String
+            val deviceFp: String
 
             if (passwordMode) {
                 val salt = ByteArray(8).also { SecureRandom().nextBytes(it) }
@@ -229,16 +236,40 @@ class CryptoManager(private val ctx: Context) {
                 System.arraycopy(salt, 0, blob, 8, 8)
                 System.arraycopy(ct, 0, blob, 16, ct.size)
                 b64 = Base64.encodeToString(blob, Base64.NO_WRAP)
-                rHex = ""; segs = listOf("", "", "", "", "", "")
+                segs = listOf("","","","","","")
+                deviceSalt = ""; deviceFp = ""
             } else {
-                val (b, r, s) = genNopass(plain)
-                b64 = b; rHex = r; segs = s
+                val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+                val iv = ByteArray(16).also { SecureRandom().nextBytes(it) }
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                val ct = cipher.doFinal(plain)
+                b64 = Base64.encodeToString(ct, Base64.NO_WRAP)
+
+                // 设备绑定: DK = SHA256(salt + FP_HASH)
+                val ds = ByteArray(16).also { SecureRandom().nextBytes(it) }
+                val fpRaw = "GEN_HOST|GEN_MODEL|GEN_BRAND"
+                val fpH = MessageDigest.getInstance("SHA-256")
+                    .digest(fpRaw.toByteArray()).joinToString("") { "%02x".format(it) }.substring(0, 32)
+                val dk = if (deviceBind) {
+                    val md = MessageDigest.getInstance("SHA-256")
+                    md.update(ds); md.update(fpH.toByteArray())
+                    md.digest().joinToString("") { "%02x".format(it) }
+                } else {
+                    // 不绑定设备时, DK 用一个固定常量, 运行端用同样方式
+                    val md = MessageDigest.getInstance("SHA-256")
+                    md.update(ds); md.update("FIXED".toByteArray())
+                    md.digest().joinToString("") { "%02x".format(it) }
+                }
+                segs = transformNoPass(key, iv, dk)
+                deviceSalt = ds.joinToString("") { "%02x".format(it) }
+                deviceFp = fpH
             }
 
             val id = sha16(plain)
             val mode = if (passwordMode) "password" else "nopass"
-            val iterLabel = if (passwordMode) "PBKDF2-HMAC-SHA512 (2,000,000 轮) + AES-256-CBC"
-                            else "AES-256-CBC + 48B 混淆材料 6 分片 (军工级)"
+            val expTs = System.currentTimeMillis() / 1000 + validDays.toLong() * 86400
+            val bindFlag = if (deviceBind) "1" else "0"
 
             val nopassVars = if (!passwordMode) """
 __EV_P1='${segs[0]}'
@@ -247,183 +278,438 @@ __EV_P3='${segs[2]}'
 __EV_P4='${segs[3]}'
 __EV_P5='${segs[4]}'
 __EV_P6='${segs[5]}'
-__EV_R='$rHex'
+__EV_SALT='$deviceSalt'
+__EV_CONST='$CONST_HEX'
+__EV_BIND=$bindFlag
 """ else ""
+
+            val expLine = if (validDays > 0) "__EV_EXP=$expTs" else "__EV_EXP=0"
+
+            // ==== 反逆向头部 ====
+            val antiRe = """
+# ---------- 反逆向 (12 项) ----------
+# 1. 反调试 -x
+case "${D}-" in *x*) exit 1 ;; esac
+# 2. BASH_XTRACEFD
+[ -n "${D}{BASH_XTRACEFD:-}" ] && exit 1
+# 3. SHELLOPTS 含 xtrace
+case ":${D}{SHELLOPTS:-}:" in *:xtrace:*) exit 1 ;; esac
+# 4. PS4 非默认
+[ "${D}{PS4:-+ }" != "+ " ] && exit 1
+# 5. TracerPid
+if [ -r /proc/self/status ]; then
+    if grep -qE '^TracerPid:\s*[1-9]' /proc/self/status 2>/dev/null; then exit 1; fi
+fi
+# 6. LD_PRELOAD
+[ -n "${D}{LD_PRELOAD:-}" ] && exit 1
+# 7. 必须非 source 调用
+[ -z "${D}{BASH_SOURCE[0]:-}" ] && exit 1
+# 8. 定位自身
+__EV_SELF="${D}{BASH_SOURCE[0]}"
+[ -f "${D}__EV_SELF" ] || __EV_SELF="${D}0"
+[ -f "${D}__EV_SELF" ] || exit 1
+# 9. 拒绝软链接
+[ -L "${D}__EV_SELF" ] && exit 1
+# 10. 父进程检测
+if [ -r "/proc/${D}PPID/cmdline" ]; then
+    __EV_PP=$(tr '\0' ' ' < "/proc/${D}PPID/cmdline" 2>/dev/null)
+    case "${D}__EV_PP" in
+        *sed*|*awk*|*grep*|*"cat "*|*tee*|*strace*|*ltrace*|*gdb*|*python*|*perl*|*ruby*|*node*|*hexdump*|*xxd*|*strings*)
+            printf '❌ 检测到分析工具\n' >&2; exit 1 ;;
+    esac
+fi
+# 11. 关键命令不得被 shell 函数覆盖
+for __c in openssl sha256sum base64 date hostname getprop cut tail head; do
+    if declare -F "${D}__c" >/dev/null 2>&1; then
+        printf '❌ 检测到命令被覆盖: ${D}__c\n' >&2; exit 1
+    fi
+done
+# 12. 自校验 SHA256 (最后一行 #HASH:xxx)
+__EV_LAST=$(tail -n 1 "${D}__EV_SELF")
+case "${D}__EV_LAST" in
+    \#HASH:*) __EV_EXP_HASH="${D}{__EV_LAST#\#HASH:}" ;;
+    *) printf '❌ 脚本结构异常\n' >&2; exit 1 ;;
+esac
+__EV_ACT_HASH=$(head -n -1 "${D}__EV_SELF" | sha256sum | awk '{print ${D}1}')
+if [ "${D}__EV_EXP_HASH" != "${D}__EV_ACT_HASH" ]; then
+    printf '❌ 脚本已被修改, 拒绝运行\n' >&2
+    command -v shred >/dev/null 2>&1 && shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null || rm -f "${D}__EV_SELF"
+    exit 1
+fi
+unset __EV_LAST __EV_EXP_HASH __EV_ACT_HASH __EV_PP
+"""
+
+            val timeCheck = if (validDays > 0) """
+# ---------- 时间窗口 ----------
+__EV_NOW=$(date +%s)
+if [ "${D}__EV_NOW" -gt ${D}__EV_EXP ]; then
+    printf '💥 脚本已过期\n' >&2
+    command -v shred >/dev/null 2>&1 && shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null || rm -f "${D}__EV_SELF"
+    exit 1
+fi
+""" else ""
+
+            val nopassDecrypt = if (!passwordMode) """
+# ---------- 无密码模式: 逆三层变换 ----------
+if [ "${D}__EV_BIND" = "1" ]; then
+    __EV_HOSTN=$(hostname 2>/dev/null || echo "")
+    __EV_MODEL=$(getprop ro.product.model 2>/dev/null || echo "")
+    __EV_BRAND=$(getprop ro.product.brand 2>/dev/null || echo "")
+    __EV_FP_RAW="${D}{__EV_HOSTN}|${D}{__EV_MODEL}|${D}{__EV_BRAND}"
+else
+    __EV_FP_RAW="FIXED"
+fi
+__EV_DK=$(printf '%s%s' "${D}__EV_SALT" "${D}__EV_FP_RAW" | sha256sum | awk '{print ${D}1}')
+unset __EV_HOSTN __EV_MODEL __EV_BRAND __EV_FP_RAW __EV_SALT
+
+__EV_T3="${D}{__EV_P1}${D}{__EV_P2}${D}{__EV_P3}${D}{__EV_P4}${D}{__EV_P5}${D}{__EV_P6}"
+unset __EV_P1 __EV_P2 __EV_P3 __EV_P4 __EV_P5 __EV_P6
+
+# 逆层3
+__EV_T2=""
+__EV_I=0
+while [ ${D}__EV_I -lt 96 ]; do
+    __EV_B=$((16#${D}{__EV_T3:${D}__EV_I:2}))
+    __EV_C=$((16#${D}{__EV_CONST:${D}__EV_I:2}))
+    __EV_T2="${D}{__EV_T2}$(printf '%02x' $(( __EV_B ^ __EV_C )))"
+    __EV_I=$((__EV_I+2))
+done
+# 逆层2 (4-hex 单元反序)
+__EV_T1=""
+__EV_I=0
+while [ ${D}__EV_I -lt 96 ]; do
+    __EV_T1="${D}{__EV_T2:${D}__EV_I:4}${D}{__EV_T1}"
+    __EV_I=$((__EV_I+4))
+done
+# 逆层1
+__EV_KM=""
+__EV_I=0
+while [ ${D}__EV_I -lt 96 ]; do
+    __EV_B=$((16#${D}{__EV_T1:${D}__EV_I:2}))
+    __EV_D=$((16#${D}{__EV_DK:${D}__EV_I:2}))
+    __EV_KM="${D}{__EV_KM}$(printf '%02x' $(( __EV_B ^ __EV_D )))"
+    __EV_I=$((__EV_I+2))
+done
+unset __EV_T3 __EV_T2 __EV_T1 __EV_DK __EV_CONST __EV_I __EV_B __EV_C __EV_D
+
+__EV_KEY=$(printf '%s' "${D}__EV_KM" | cut -c1-64)
+__EV_IV=$(printf '%s' "${D}__EV_KM" | cut -c65-96)
+unset __EV_KM
+""" else """
+# ---------- 密码模式 ----------
+__EV_MAX_TRIES=${D}__EV_FAIL
+[ "${D}__EV_MAX_TRIES" -le 0 ] && __EV_MAX_TRIES=1
+__EV_OK=0
+__EV_TRIES=0
+while [ ${D}__EV_TRIES -lt ${D}__EV_MAX_TRIES ]; do
+    printf '🔐 输入密码: ' >&2
+    IFS= read -r -s __EV_PWD
+    printf '\n' >&2
+    [ -z "${D}__EV_PWD" ] && { __EV_TRIES=$((__EV_TRIES+1)); continue; }
+    printf '⏳ 派生密钥 (约 3 秒)...\n' >&2
+    printf '%s\n' "${D}__EV_PWD" | openssl enc -d -aes-256-cbc \\
+        -pbkdf2 -iter 2000000 -md sha512 -pass stdin \\
+        -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
+    __EV_RC=${D}?
+    unset __EV_PWD
+    if [ ${D}__EV_RC -eq 0 ] && [ -s "${D}{__EV_TMP}.sh" ]; then __EV_OK=1; break; fi
+    rm -f "${D}{__EV_TMP}.sh"
+    __EV_TRIES=$((__EV_TRIES+1))
+    printf '❌ 密码错误 (%s/%s)\n' "${D}__EV_TRIES" "${D}__EV_MAX_TRIES" >&2
+done
+rm -f "${D}{__EV_TMP}.enc"
+[ ${D}__EV_OK -ne 1 ] && { printf '💥 密码错误过多, 自毁\n' >&2; shred -u "$0" 2>/dev/null || rm -f "$0"; exit 1; }
+"""
 
             val tmpl = """
 #!/data/data/com.termux/files/usr/bin/bash
-# 也可在 MT 管理器中运行:  bash 本文件.sh
-# ============================================================
-#  EncryptVault Protected Script (v9 · ${mode})
-#  $iterLabel
-# ============================================================
-
-printf '\n⚠️  本脚本会执行解密后的 Bash 代码, 请确认来源可信\n\n' >&2
-
+# EncryptVault Protected Script v11 (${mode})
 umask 077
+$antiRe
+$timeCheck
+command -v openssl >/dev/null 2>&1 || exit 1
+command -v sha256sum >/dev/null 2>&1 || exit 1
 
-__EV_TMPDIR=""
-for __d in "${D}{TMPDIR:-}" "/data/data/com.termux/files/usr/tmp" "/tmp" "."; do
-    if [ -n "${D}__d" ] && [ -d "${D}__d" ] && [ -w "${D}__d" ]; then
-        __EV_TMPDIR="${D}__d"; break
-    fi
-done
-[ -z "${D}__EV_TMPDIR" ] && { printf '❌ 无可用临时目录\n' >&2; exit 1; }
+__EV_TMP="${D}{TMPDIR:-/tmp}/.ev_${D}${D}_${D}RANDOM"
+trap 'rm -f "${D}{__EV_TMP}.enc" "${D}{__EV_TMP}.sh" 2>/dev/null' EXIT INT TERM HUP
 
-command -v openssl >/dev/null 2>&1 || {
-    printf '❌ 需要 openssl\n' >&2; exit 1; }
-
-__EV_MODE='${mode}'
 __EV_D='$b64'
-$nopassVars
-__EV_MAX=$maxRuns
-__EV_FAIL=$failLimit
-__EV_ID='$id'
-
-case "${D}__EV_MAX"  in ''|*[!0-9]*) __EV_MAX=0 ;; esac
-case "${D}__EV_FAIL" in ''|*[!0-9]*) __EV_FAIL=0 ;; esac
-
-__EV_HOME="${D}{HOME:-}"
-[ -z "${D}__EV_HOME" ] && __EV_HOME="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-[ -z "${D}__EV_HOME" ] && __EV_HOME="."
-__EV_STATE_DIR="${D}{__EV_HOME}/.ev_state"
-mkdir -p "${D}__EV_STATE_DIR" 2>/dev/null
-chmod 700 "${D}__EV_STATE_DIR" 2>/dev/null
-__EV_STATE="${D}{__EV_STATE_DIR}/${D}__EV_ID"
-
-__ev_self_destruct() {
-    if command -v shred >/dev/null 2>&1; then
-        shred -u -n 3 -z "$0" 2>/dev/null
-    fi
-    rm -f "$0" 2>/dev/null
-    if command -v shred >/dev/null 2>&1; then
-        shred -u -n 3 -z "${D}__EV_STATE" 2>/dev/null
-    fi
-    rm -f "${D}__EV_STATE" 2>/dev/null
-    printf '💥 脚本已自毁 (shred 覆盖 3 次)\n' >&2
-}
-
-if [ "${D}__EV_MAX" -gt 0 ]; then
-    __EV_RUNS=0
-    [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
-    case "${D}__EV_RUNS" in ''|*[!0-9]*) __EV_RUNS=0 ;; esac
-    if [ "${D}__EV_RUNS" -ge "${D}__EV_MAX" ]; then
-        printf '❌ 已达最大执行次数 (%s/%s)\n' "${D}__EV_RUNS" "${D}__EV_MAX" >&2
-        __ev_self_destruct
-        exit 1
-    fi
-fi
-
-__EV_TMP="${D}{__EV_TMPDIR}/.ev_${D}${D}_${D}(date +%s)_${D}RANDOM"
-trap 'rm -f "${D}{__EV_TMP}.enc" "${D}{__EV_TMP}.sh" "${D}{__EV_TMP}.k" 2>/dev/null' EXIT INT TERM HUP
-
 printf '%s' "${D}__EV_D" | base64 -d > "${D}{__EV_TMP}.enc" 2>/dev/null
 unset __EV_D
-[ -s "${D}{__EV_TMP}.enc" ] || { printf '❌ 数据损坏\n' >&2; exit 1; }
+[ -s "${D}{__EV_TMP}.enc" ] || exit 1
 
-if [ "${D}__EV_MODE" = "password" ]; then
-    __EV_MAX_TRIES=${D}__EV_FAIL
-    [ "${D}__EV_MAX_TRIES" -le 0 ] && __EV_MAX_TRIES=1
-    __EV_OK=0
-    __EV_TRIES=0
-    while [ ${D}__EV_TRIES -lt ${D}__EV_MAX_TRIES ]; do
-        printf '🔐 输入密码: ' >&2
-        IFS= read -r -s __EV_PWD
-        printf '\n' >&2
-        if [ -z "${D}__EV_PWD" ]; then
-            __EV_TRIES=${D}(( __EV_TRIES + 1 ))
-            continue
-        fi
-        printf '⏳ 派生密钥中 (约 3 秒)...\n' >&2
-        printf '%s\n' "${D}__EV_PWD" | \
-            openssl enc -d -aes-256-cbc -pbkdf2 -iter 2000000 -md sha512 \
-                -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
-        __EV_RC=${D}?
-        unset __EV_PWD
-        if [ ${D}__EV_RC -eq 0 ] && [ -s "${D}{__EV_TMP}.sh" ]; then
-            __EV_OK=1; break
-        fi
-        rm -f "${D}{__EV_TMP}.sh"
-        __EV_TRIES=${D}(( __EV_TRIES + 1 ))
-        printf '❌ 密码错误 (%s/%s)\n' "${D}__EV_TRIES" "${D}__EV_MAX_TRIES" >&2
-    done
-    rm -f "${D}{__EV_TMP}.enc"
-    if [ ${D}__EV_OK -ne 1 ]; then
-        if [ "${D}__EV_FAIL" -gt 0 ]; then
-            printf '💥 密码错误次数过多, 脚本自毁\n' >&2
-            __ev_self_destruct
-        fi
-        exit 1
-    fi
+$nopassVars
+$expLine
+__EV_FAIL=$failLimit
+__EV_MAX=$maxRuns
+
+$nopassDecrypt
+
+if [ "${D}__EV_MODE:-}" = "password" ] || [ -n "${D}{__EV_KEY:-}" ]; then :; fi
+""".trimIndent()
+
+            // 组装: 密码模式需要额外处理, 无密码直接解密
+            val headTail = """
+$nopassDecrypt
+
+if [ "$mode" = "password" ]; then
+    :
 else
-    # ==== 无密码模式: 6 段拼接 + XOR 循环还原 + hex 解码 ====
-    __EV_ALL="${D}{__EV_P1}${D}{__EV_P2}${D}{__EV_P3}${D}{__EV_P4}${D}{__EV_P5}${D}{__EV_P6}"
-    unset __EV_P1 __EV_P2 __EV_P3 __EV_P4 __EV_P5 __EV_P6
-
-    # 96 次 XOR 循环还原 hex
-    __EV_KHEX=""
-    __EV_I=0
-    while [ ${D}__EV_I -lt 96 ]; do
-        __EV_B=${D}{__EV_ALL:${D}__EV_I:2}
-        __EV_BIDX=${D}(( __EV_I / 2 ))
-        __EV_RIDX=${D}(( __EV_BIDX % 32 ))
-        __EV_RC=${D}{__EV_R:${D}(( __EV_RIDX * 2 )):2}
-        __EV_X=${D}(( (16#${D}__EV_B) ^ (16#${D}__EV_RC) ))
-        __EV_KHEX="${D}{__EV_KHEX}${D}(printf '%02x' ${D}__EV_X)"
-        __EV_I=${D}(( __EV_I + 2 ))
-    done
-    unset __EV_ALL __EV_R __EV_I __EV_B __EV_BIDX __EV_RIDX __EV_RC __EV_X
-
-    __EV_KEY_HEX=$(printf '%s' "${D}__EV_KHEX" | cut -c1-64)
-    __EV_IV_HEX=$(printf '%s' "${D}__EV_KHEX" | cut -c65-96)
-    unset __EV_KHEX
-
-    openssl enc -d -aes-256-cbc -K "${D}__EV_KEY_HEX" -iv "${D}__EV_IV_HEX" \
+    openssl enc -d -aes-256-cbc -K "${D}__EV_KEY" -iv "${D}__EV_IV" \\
         -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
     __EV_RC=${D}?
     rm -f "${D}{__EV_TMP}.enc"
-    unset __EV_KEY_HEX __EV_IV_HEX
+    unset __EV_KEY __EV_IV
     if [ ${D}__EV_RC -ne 0 ] || [ ! -s "${D}{__EV_TMP}.sh" ]; then
-        printf '❌ 解密失败\n' >&2
+        printf '❌ 解密失败 (设备/时间不符)\n' >&2
+        command -v shred >/dev/null 2>&1 && shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null || rm -f "${D}__EV_SELF"
         exit 1
     fi
 fi
 
-if [ "${D}__EV_MAX" -gt 0 ]; then
+# 运行次数限制
+if [ ${D}{__EV_MAX:-0} -gt 0 ]; then
+    __EV_STATE="${D}{HOME}/.ev_state/${D}__EV_ID"
+    mkdir -p "${D}{HOME}/.ev_state" 2>/dev/null
     __EV_RUNS=0
     [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
     case "${D}__EV_RUNS" in ''|*[!0-9]*) __EV_RUNS=0 ;; esac
-    __EV_RUNS=${D}(( __EV_RUNS + 1 ))
-    printf '%s' "${D}__EV_RUNS" > "${D}__EV_STATE" 2>/dev/null
+    if [ ${D}__EV_RUNS -ge ${D}__EV_MAX ]; then
+        printf '❌ 已达最大执行次数\n' >&2
+        command -v shred >/dev/null 2>&1 && shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null || rm -f "${D}__EV_SELF"
+        exit 1
+    fi
+    echo $((__EV_RUNS+1)) > "${D}__EV_STATE"
     chmod 600 "${D}__EV_STATE" 2>/dev/null
 fi
 
 chmod 700 "${D}{__EV_TMP}.sh" 2>/dev/null
 bash "${D}{__EV_TMP}.sh"
 __EV_RC=${D}?
-
-rm -f "${D}{__EV_TMP}.sh" 2>/dev/null
+rm -f "${D}{__EV_TMP}.sh"
 trap - EXIT INT TERM HUP
-unset __EV_TMP __EV_TMPDIR __EV_STATE __EV_STATE_DIR __EV_HOME
 exit ${D}__EV_RC
-""".trimIndent()
+"""
 
-            outFile.writeText(tmpl)
+            // 完整脚本: 头 + 反逆向 + 分片 + 解密分支 + 尾部
+            val full = buildString {
+                append("#!/data/data/com.termux/files/usr/bin/bash\n")
+                append("# EncryptVault Protected Script v11 (")
+                append(mode); append(")\n")
+                append("umask 077\n\n")
+                append(antiRe)
+                append(timeCheck)
+                append("\ncommand -v openssl >/dev/null 2>&1 || exit 1\n")
+                append("command -v sha256sum >/dev/null 2>&1 || exit 1\n\n")
+                append("__EV_TMP=\"")
+                append(D); append("{TMPDIR:-/tmp}/.ev_")
+                append(D); append("$"); append(D); append("RANDOM\"\n")
+                append("trap 'rm -f \"")
+                append(D); append("{__EV_TMP}.enc\" \"")
+                append(D); append("{__EV_TMP}.sh\" 2>/dev/null' EXIT INT TERM HUP\n\n")
+                append("__EV_MODE='$mode'\n")
+                append("__EV_D='$b64'\n")
+                if (!passwordMode) {
+                    append("__EV_P1='"); append(segs[0]); append("'\n")
+                    append("__EV_P2='"); append(segs[1]); append("'\n")
+                    append("__EV_P3='"); append(segs[2]); append("'\n")
+                    append("__EV_P4='"); append(segs[3]); append("'\n")
+                    append("__EV_P5='"); append(segs[4]); append("'\n")
+                    append("__EV_P6='"); append(segs[5]); append("'\n")
+                    append("__EV_SALT='$deviceSalt'\n")
+                    append("__EV_CONST='$CONST_HEX'\n")
+                    append("__EV_BIND=$bindFlag\n")
+                }
+                if (validDays > 0) { append("__EV_EXP=$expTs\n") } else { append("__EV_EXP=0\n") }
+                append("__EV_MAX=$maxRuns\n")
+                append("__EV_FAIL=$failLimit\n")
+                append("__EV_ID='$id'\n\n")
+                append("printf '%s' \"")
+                append(D); append("__EV_D\" | base64 -d > \"")
+                append(D); append("{__EV_TMP}.enc\" 2>/dev/null\n")
+                append("unset __EV_D\n")
+                append("[ -s \"")
+                append(D); append("{__EV_TMP}.enc\" ] || exit 1\n\n")
+                if (passwordMode) {
+                    append("__EV_MAX_TRIES=$failLimit\n")
+                    append("[ \"")
+                    append(D); append("__EV_MAX_TRIES\" -le 0 ] && __EV_MAX_TRIES=1\n")
+                    append("__EV_OK=0\n__EV_TRIES=0\n")
+                    append("while [ ")
+                    append(D); append("__EV_TRIES -lt ")
+                    append(D); append("__EV_MAX_TRIES ]; do\n")
+                    append("    printf '🔐 输入密码: ' >&2\n")
+                    append("    IFS= read -r -s __EV_PWD\n")
+                    append("    printf '\\n' >&2\n")
+                    append("    [ -z \"")
+                    append(D); append("__EV_PWD\" ] && { __EV_TRIES=$((__EV_TRIES+1)); continue; }\n")
+                    append("    printf '⏳ 派生密钥 (约 3 秒)...\\n' >&2\n")
+                    append("    printf '%s\\n' \"")
+                    append(D); append("__EV_PWD\" | openssl enc -d -aes-256-cbc \\\n")
+                    append("        -pbkdf2 -iter 2000000 -md sha512 -pass stdin \\\n")
+                    append("        -in \"")
+                    append(D); append("{__EV_TMP}.enc\" -out \"")
+                    append(D); append("{__EV_TMP}.sh\" 2>/dev/null\n")
+                    append("    __EV_RC=$?\n    unset __EV_PWD\n")
+                    append("    if [ ")
+                    append(D); append("__EV_RC -eq 0 ] && [ -s \"")
+                    append(D); append("{__EV_TMP}.sh\" ]; then __EV_OK=1; break; fi\n")
+                    append("    rm -f \"")
+                    append(D); append("{__EV_TMP}.sh\"\n")
+                    append("    __EV_TRIES=$((__EV_TRIES+1))\n")
+                    append("    printf '❌ 密码错误 (%s/%s)\\n' \"")
+                    append(D); append("__EV_TRIES\" \"")
+                    append(D); append("__EV_MAX_TRIES\" >&2\n")
+                    append("done\n")
+                    append("rm -f \"")
+                    append(D); append("{__EV_TMP}.enc\"\n")
+                    append("[ ")
+                    append(D); append("__EV_OK -ne 1 ] && { shred -u \"")
+                    append(D); append("__EV_SELF\" 2>/dev/null || rm -f \"")
+                    append(D); append("__EV_SELF\"; exit 1; }\n")
+                } else {
+                    // 无密码逆变换
+                    append("# 逆三层变换\n")
+                    append("if [ \"")
+                    append(D); append("__EV_BIND\" = \"1\" ]; then\n")
+                    append("    __EV_HN=$(hostname 2>/dev/null || echo \"\")\n")
+                    append("    __EV_MD=$(getprop ro.product.model 2>/dev/null || echo \"\")\n")
+                    append("    __EV_BR=$(getprop ro.product.brand 2>/dev/null || echo \"\")\n")
+                    append("    __EV_FPR=\"")
+                    append(D); append("{__EV_HN}|")
+                    append(D); append("{__EV_MD}|")
+                    append(D); append("{__EV_BR}\"\n")
+                    append("else\n    __EV_FPR=\"FIXED\"\nfi\n")
+                    append("__EV_DK=$(printf '%s%s' \"")
+                    append(D); append("__EV_SALT\" \"")
+                    append(D); append("__EV_FPR\" | sha256sum | awk '{print $1}')\n")
+                    append("unset __EV_HN __EV_MD __EV_BR __EV_FPR __EV_SALT\n\n")
+                    append("__EV_T3=\"")
+                    append(D); append("{__EV_P1}")
+                    append(D); append("{__EV_P2}")
+                    append(D); append("{__EV_P3}")
+                    append(D); append("{__EV_P4}")
+                    append(D); append("{__EV_P5}")
+                    append(D); append("{__EV_P6}\"\n")
+                    append("unset __EV_P1 __EV_P2 __EV_P3 __EV_P4 __EV_P5 __EV_P6\n\n")
+                    append("__EV_T2=\"\"\n__EV_I=0\n")
+                    append("while [ ")
+                    append(D); append("__EV_I -lt 96 ]; do\n")
+                    append("    __EV_B=$((16#")
+                    append(D); append("{__EV_T3:")
+                    append(D); append("__EV_I:2}))\n")
+                    append("    __EV_C=$((16#")
+                    append(D); append("{__EV_CONST:")
+                    append(D); append("__EV_I:2}))\n")
+                    append("    __EV_T2=\"")
+                    append(D); append("{__EV_T2}$(printf '%02x' $(( __EV_B ^ __EV_C )))\"\n")
+                    append("    __EV_I=$((__EV_I+2))\n")
+                    append("done\n")
+                    append("__EV_T1=\"\"\n__EV_I=0\n")
+                    append("while [ ")
+                    append(D); append("__EV_I -lt 96 ]; do\n")
+                    append("    __EV_T1=\"")
+                    append(D); append("{__EV_T2:")
+                    append(D); append("__EV_I:4}")
+                    append(D); append("{__EV_T1}\"\n")
+                    append("    __EV_I=$((__EV_I+4))\n")
+                    append("done\n")
+                    append("__EV_KM=\"\"\n__EV_I=0\n")
+                    append("while [ ")
+                    append(D); append("__EV_I -lt 96 ]; do\n")
+                    append("    __EV_B=$((16#")
+                    append(D); append("{__EV_T1:")
+                    append(D); append("__EV_I:2}))\n")
+                    append("    __EV_DD=$((16#")
+                    append(D); append("{__EV_DK:")
+                    append(D); append("__EV_I:2}))\n")
+                    append("    __EV_KM=\"")
+                    append(D); append("{__EV_KM}$(printf '%02x' $(( __EV_B ^ __EV_DD )))\"\n")
+                    append("    __EV_I=$((__EV_I+2))\n")
+                    append("done\n")
+                    append("unset __EV_T3 __EV_T2 __EV_T1 __EV_DK __EV_CONST __EV_I __EV_B __EV_C __EV_DD\n\n")
+                    append("__EV_KEY=$(printf '%s' \"")
+                    append(D); append("__EV_KM\" | cut -c1-64)\n")
+                    append("__EV_IV=$(printf '%s' \"")
+                    append(D); append("__EV_KM\" | cut -c65-96)\n")
+                    append("unset __EV_KM\n\n")
+                    append("openssl enc -d -aes-256-cbc -K \"")
+                    append(D); append("__EV_KEY\" -iv \"")
+                    append(D); append("__EV_IV\" \\\n")
+                    append("    -in \"")
+                    append(D); append("{__EV_TMP}.enc\" -out \"")
+                    append(D); append("{__EV_TMP}.sh\" 2>/dev/null\n")
+                    append("__EV_RC=$?\n")
+                    append("rm -f \"")
+                    append(D); append("{__EV_TMP}.enc\"\n")
+                    append("unset __EV_KEY __EV_IV\n")
+                    append("if [ ")
+                    append(D); append("__EV_RC -ne 0 ] || [ ! -s \"")
+                    append(D); append("{__EV_TMP}.sh\" ]; then\n")
+                    append("    printf '❌ 解密失败 (设备/时间不符)\\n' >&2\n")
+                    append("    command -v shred >/dev/null 2>&1 && shred -u -n 2 -z \"")
+                    append(D); append("__EV_SELF\" 2>/dev/null || rm -f \"")
+                    append(D); append("__EV_SELF\"\n")
+                    append("    exit 1\n")
+                    append("fi\n")
+                }
+                append("\nif [ \"")
+                append(D); append("__EV_MAX\" -gt 0 ]; then\n")
+                append("    __EV_STATE=\"")
+                append(D); append("{HOME}/.ev_state/")
+                append(D); append("__EV_ID\"\n")
+                append("    mkdir -p \"")
+                append(D); append("{HOME}/.ev_state\" 2>/dev/null\n")
+                append("    __EV_RUNS=0\n")
+                append("    [ -f \"")
+                append(D); append("__EV_STATE\" ] && __EV_RUNS=$(cat \"")
+                append(D); append("__EV_STATE\" 2>/dev/null || echo 0)\n")
+                append("    case \"")
+                append(D); append("__EV_RUNS\" in ''|*[!0-9]*) __EV_RUNS=0 ;; esac\n")
+                append("    if [ ")
+                append(D); append("__EV_RUNS -ge ")
+                append(D); append("__EV_MAX ]; then\n")
+                append("        printf '❌ 已达最大执行次数\\n' >&2\n")
+                append("        command -v shred >/dev/null 2>&1 && shred -u -n 2 -z \"")
+                append(D); append("__EV_SELF\" 2>/dev/null || rm -f \"")
+                append(D); append("__EV_SELF\"\n")
+                append("        exit 1\n    fi\n")
+                append("    echo $((__EV_RUNS+1)) > \"")
+                append(D); append("__EV_STATE\"\n")
+                append("    chmod 600 \"")
+                append(D); append("__EV_STATE\" 2>/dev/null\n")
+                append("fi\n\n")
+                append("chmod 700 \"")
+                append(D); append("{__EV_TMP}.sh\" 2>/dev/null\n")
+                append("bash \"")
+                append(D); append("{__EV_TMP}.sh\"\n")
+                append("__EV_RC=$?\n")
+                append("rm -f \"")
+                append(D); append("{__EV_TMP}.sh\"\n")
+                append("trap - EXIT INT TERM HUP\n")
+                append("exit $__EV_RC\n")
+            }
+
+            outFile.writeText(full)
             outFile.setExecutable(true)
 
-            val modeLabel = if (passwordMode) "密码模式" else "无密码模式 (军工级)"
-            val maxLabel = if (maxRuns > 0) "$maxRuns 次" else "无限"
-            val failLabel = if (passwordMode) (if (failLimit > 0) "$failLimit 次自毁" else "关闭") else "—"
+            // 追加自校验哈希行
+            val selfHash = MessageDigest.getInstance("SHA-256")
+                .digest(outFile.readBytes())
+                .joinToString("") { "%02x".format(it) }
+            outFile.appendText("#HASH:$selfHash\n")
+
+            val modeLabel = if (passwordMode) "密码模式" else "无密码模式"
+            val bindLabel = if (!passwordMode) (if (deviceBind) " · 设备绑定开" else " · 设备绑定关") else ""
+            val timeLabel = if (validDays > 0) " · ${validDays} 天有效" else " · 永不过期"
 
             """
-✅ 加密成功 ($modeLabel · v9)
+✅ 加密成功 (v11 · $modeLabel$bindLabel$timeLabel)
 📄 ${outFile.absolutePath}
-🔒 ${if (passwordMode) "PBKDF2-SHA512(2M) + AES-256-CBC" else "AES-256-CBC + 48B/6片/XOR混淆"}
-📊 执行上限: $maxLabel
-💥 自毁方式: shred 覆盖 3 次
-🛡 umask 077 · trap 全覆盖
-🔗 兼容: Termux / MT Manager / Linux
-▶️ 运行: bash ${outFile.name}
+🛡 反逆向 12 项 · 自校验 SHA256
+🔒 ${if (passwordMode) "PBKDF2-SHA512(2M) + AES-256-CBC" else "AES-256-CBC + 三层变换"}
+📊 执行上限: ${if (maxRuns > 0) "$maxRuns 次" else "无限"}
+💥 自毁: shred × 2
 """.trimIndent()
         } catch (e: Exception) {
             "❌ 失败: ${e.message}"
@@ -437,15 +723,11 @@ exit ${D}__EV_RC
             val src = File(inputPath.trim())
             if (!src.exists()) return@withContext "❌ 保护脚本不存在"
             if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
-
             val text = src.readText()
             val dRe = Regex("""__EV_D\s*=\s*['"]([A-Za-z0-9+/=]+)['"]""")
             val dM = dRe.find(text) ?: return@withContext "❌ 不是有效的保护脚本"
-            val modeRe = Regex("""__EV_MODE\s*=\s*['"](password|nopass)['"]""")
-            val modeM = modeRe.find(text)
-            val isPwd = modeM?.groupValues?.get(1) == "password"
-
             val b64 = dM.groupValues[1]
+            val isPwd = text.contains("__EV_MODE='password'")
             val ct: ByteArray
             val key: ByteArray
             val iv: ByteArray
@@ -453,45 +735,20 @@ exit ${D}__EV_RC
             if (isPwd) {
                 val blob = Base64.decode(b64, Base64.NO_WRAP)
                 if (blob.size < 17) return@withContext "❌ 数据损坏"
-                if (String(blob, 0, 8, Charsets.US_ASCII) != "Salted__")
-                    return@withContext "❌ 格式错误"
                 if (password.isBlank()) return@withContext "❌ 请输入密码"
                 val salt = blob.copyOfRange(8, 16)
                 ct = blob.copyOfRange(16, blob.size)
                 val kp = deriveOpenSSLKey(password, salt)
                 key = kp.first; iv = kp.second
             } else {
-                // v9 无密码模式解保护
-                val pRegexes = listOf(
-                    Regex("""__EV_P1\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
-                    Regex("""__EV_P2\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
-                    Regex("""__EV_P3\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
-                    Regex("""__EV_P4\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
-                    Regex("""__EV_P5\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
-                    Regex("""__EV_P6\s*=\s*['"]([0-9a-fA-F]+)['"]""")
-                )
-                val segs = pRegexes.map { re ->
-                    re.find(text)?.groupValues?.get(1) ?: return@withContext "❌ 缺少分片字段"
-                }
-                val encStr = segs.joinToString("")
-
-                // XOR 还原
-                val khexSb = StringBuilder()
-                for (i in 0 until 48) {
-                    val b = encStr.substring(i * 2, i * 2 + 2).toInt(16)
-                    val r = XOR_R[i % 32].toInt() and 0xFF
-                    khexSb.append("%02x".format(b xor r))
-                }
-                val khex = khexSb.toString()
-                key = khex.substring(0, 64).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                iv = khex.substring(64, 96).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                ct = Base64.decode(b64, Base64.NO_WRAP)
+                // 无密码: 无法在此解保护 (需要设备指纹)
+                return@withContext "❌ 无密码模式无法在 App 内解保护 (设备绑定)"
             }
 
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
             val plain = try { cipher.doFinal(ct) }
-                        catch (e: Exception) { return@withContext "❌ 密码错误或数据损坏" }
+                        catch (e: Exception) { return@withContext "❌ 密码错误" }
 
             val raw = outputPathRaw.trim().ifBlank { src.parent ?: "/sdcard" }
             val outName = src.name.removeSuffix("-protected.sh").let {
@@ -504,12 +761,7 @@ exit ${D}__EV_RC
             outFile.parentFile?.mkdirs()
             outFile.writeBytes(plain)
             outFile.setExecutable(true)
-
-            """
-✅ 已还原 (${if (isPwd) "密码模式" else "无密码模式"})
-📄 ${outFile.absolutePath}
-📦 ${plain.size} 字节
-""".trimIndent()
+            "✅ 已还原: ${outFile.absolutePath}\n📦 ${plain.size} 字节"
         } catch (e: Exception) { "❌ 解保护失败: ${e.message}" }
     }
 

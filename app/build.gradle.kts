@@ -10,8 +10,8 @@ android {
         applicationId = "com.encryptvault.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "9.0.0"
+        versionCode = 11
+        versionName = "11.0.0"
     }
     buildFeatures { compose = true }
     compileOptions {
@@ -20,6 +20,9 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildTypes { release { isMinifyEnabled = false } }
+    packaging {
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    }
 }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
