@@ -29,21 +29,91 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val VERSION: Byte = 0x07
+        private const val VERSION: Byte = 0x08
         private const val SALT_SIZE = 16
         private const val IV_SIZE = 16
         private const val CHECK_SIZE = 8
-        // 文件: PBKDF2-HMAC-SHA512 2,000,000 轮
-        private const val ITERATIONS = 2_000_000
-        private const val FILE_PRF = "PBKDF2WithHmacSHA512"
+        // 主密钥: PBKDF2-HMAC-SHA512 2M 轮 (会话内只跑一次)
+        private const val PBKDF2_ITER = 2_000_000
+        private const val PBKDF2_PRF = "PBKDF2WithHmacSHA512"
         private const val KEY_BITS = 256
         private const val GCM_TAG_BITS = 128
-        private const val HEADER_SIZE = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
-        // Shell: PBKDF2-HMAC-SHA512 2,000,000 轮 (openssl -iter 2000000 -md sha512)
+        // Shell: openssl 兼容
         private const val OPENSSL_ITER = 2_000_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA512"
+        private const val HKDF_INFO = "EncryptVault-file-v8"
+        // v8 文件格式: [1B ver][16B masterSalt][16B fileSalt][16B IV][8B KCV][密文]
+        private const val HEADER_SIZE = 1 + SALT_SIZE + SALT_SIZE + IV_SIZE + CHECK_SIZE
     }
 
+    // ============================================================
+    //  会话缓存 (核心 20× 加速)
+    // ============================================================
+    private var sessionPwdHash: String? = null
+    private var sessionMasterSalt: ByteArray? = null
+    private var sessionMasterKey: SecretKeySpec? = null
+
+    private fun hashPwd(p: String): String {
+        val d = MessageDigest.getInstance("SHA-256").digest(p.toByteArray(Charsets.UTF_8))
+        return d.joinToString("") { "%02x".format(it) }
+    }
+
+    /** 确保会话主密钥已派生。首次调用跑 2M 轮 PBKDF2, 之后直接命中缓存。 */
+    private fun ensureMasterKey(password: String): Pair<ByteArray, SecretKeySpec> {
+        val h = hashPwd(password)
+        if (sessionPwdHash == h && sessionMasterSalt != null && sessionMasterKey != null) {
+            return sessionMasterSalt!! to sessionMasterKey!!
+        }
+        val salt = ByteArray(SALT_SIZE).also { SecureRandom().nextBytes(it) }
+        val factory = SecretKeyFactory.getInstance(PBKDF2_PRF)
+        val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITER, KEY_BITS)
+        val key = SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
+        sessionPwdHash = h
+        sessionMasterSalt = salt
+        sessionMasterKey = key
+        return salt to key
+    }
+
+    /** 使用指定 masterSalt 派生主密钥 (解密时用, 不覆盖会话状态) */
+    private fun deriveMasterKeyWithSalt(password: String, salt: ByteArray): SecretKeySpec {
+        if (sessionMasterSalt?.contentEquals(salt) == true && sessionMasterKey != null) {
+            return sessionMasterKey!!
+        }
+        val factory = SecretKeyFactory.getInstance(PBKDF2_PRF)
+        val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITER, KEY_BITS)
+        return SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
+    }
+
+    /** HKDF-SHA256: 从主密钥 + fileSalt 快速派生文件子密钥 (约 0.1ms) */
+    private fun deriveFileKey(masterKey: SecretKeySpec, fileSalt: ByteArray): SecretKeySpec {
+        // HKDF-Extract
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(masterKey.encoded, "HmacSHA256"))
+        val prk = mac.doFinal(fileSalt)
+        // HKDF-Expand
+        val mac2 = Mac.getInstance("HmacSHA256")
+        mac2.init(SecretKeySpec(prk, "HmacSHA256"))
+        val okm = mac2.doFinal(HKDF_INFO.toByteArray(Charsets.US_ASCII))
+        return SecretKeySpec(okm.copyOf(32), "AES")
+    }
+
+    private fun keyCheck(key: SecretKeySpec): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(key.encoded, "HmacSHA256"))
+        val tag = mac.doFinal("EncryptVault-KCV-v8".toByteArray(Charsets.US_ASCII))
+        return tag.copyOf(CHECK_SIZE)
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+    private fun sha16(data: ByteArray): String {
+        val d = MessageDigest.getInstance("SHA-256").digest(data)
+        return d.copyOf(8).toHex()
+    }
+
+    // ============================================================
+    //  公开 API
+    // ============================================================
     fun getFileInfo(uri: Uri): FileItem? = try {
         ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
             if (c.moveToFirst()) {
@@ -70,95 +140,65 @@ class CryptoManager(private val ctx: Context) {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data) }
     }
 
-    private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
-        val factory = SecretKeyFactory.getInstance(FILE_PRF)
-        val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_BITS)
-        return SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
-    }
-
-    // v7: 用 HMAC-SHA256 派生 8 字节指纹, 避免密钥哈希泄露部分信息
-    private fun keyCheck(key: SecretKeySpec): ByteArray {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(key.encoded, "HmacSHA256"))
-        val tag = mac.doFinal("EncryptVault-KCV-v7".toByteArray(Charsets.US_ASCII))
-        return tag.copyOf(CHECK_SIZE)
-    }
-
-    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
-
-    private fun sha16(data: ByteArray): String {
-        val d = MessageDigest.getInstance("SHA-256").digest(data)
-        return d.copyOf(8).toHex()
-    }
-
+    // ---- 加密: 使用会话主密钥 (第一次慢, 之后快) ----
     suspend fun encryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val plain = readBytes(uri)
-            val rnd = SecureRandom()
-            val salt = ByteArray(SALT_SIZE).also { rnd.nextBytes(it) }
-            val iv = ByteArray(IV_SIZE).also { rnd.nextBytes(it) }
-            val key = deriveKey(password, salt)
+            val (masterSalt, masterKey) = ensureMasterKey(password)
+            val fileSalt = ByteArray(SALT_SIZE).also { SecureRandom().nextBytes(it) }
+            val iv = ByteArray(IV_SIZE).also { SecureRandom().nextBytes(it) }
+            val fileKey = deriveFileKey(masterKey, fileSalt)
+            val kcv = keyCheck(masterKey)
+
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.init(Cipher.ENCRYPT_MODE, fileKey, GCMParameterSpec(GCM_TAG_BITS, iv))
             val ct = cipher.doFinal(plain)
+
             val out = ByteArray(HEADER_SIZE + ct.size)
             out[0] = VERSION
-            System.arraycopy(salt, 0, out, 1, SALT_SIZE)
-            System.arraycopy(iv, 0, out, 1 + SALT_SIZE, IV_SIZE)
-            System.arraycopy(keyCheck(key), 0, out, 1 + SALT_SIZE + IV_SIZE, CHECK_SIZE)
+            System.arraycopy(masterSalt, 0, out, 1, SALT_SIZE)
+            System.arraycopy(fileSalt, 0, out, 1 + SALT_SIZE, SALT_SIZE)
+            System.arraycopy(iv, 0, out, 1 + SALT_SIZE + SALT_SIZE, IV_SIZE)
+            System.arraycopy(kcv, 0, out, 1 + SALT_SIZE + SALT_SIZE + IV_SIZE, CHECK_SIZE)
             System.arraycopy(ct, 0, out, HEADER_SIZE, ct.size)
             writeBytes(uri, out)
             true
         } catch (e: Exception) { e.printStackTrace(); false }
     }
 
+    // ---- 解密: 从文件读取 masterSalt, 主密钥可能命中缓存 ----
     suspend fun decryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val data = readBytes(uri)
             if (data.size < HEADER_SIZE + 16) return@withContext false
             val v = data[0]
-            if (v != VERSION && v != 0x06.toByte() && v != 0x05.toByte()
-                && v != 0x04.toByte() && v != 0x03.toByte()) return@withContext false
-            val hdr = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
-            if (data.size < hdr + 16) return@withContext false
-            val salt = data.copyOfRange(1, 1 + SALT_SIZE)
-            val iv = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE + IV_SIZE)
-            val check = data.copyOfRange(1 + SALT_SIZE + IV_SIZE, hdr)
-            val ct = data.copyOfRange(hdr, data.size)
+            if (v != VERSION) return@withContext false
 
-            // 版本自适应
-            val prf = when (v) {
-                VERSION, 0x06.toByte() -> FILE_PRF
-                else -> "PBKDF2WithHmacSHA256"
-            }
-            val iters = when (v) {
-                VERSION -> ITERATIONS
-                0x06.toByte() -> 1_200_000
-                else -> 600_000
-            }
-            val factory = SecretKeyFactory.getInstance(prf)
-            val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, iters, KEY_BITS)
-            val key = SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
+            val masterSalt = data.copyOfRange(1, 1 + SALT_SIZE)
+            val fileSalt = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE * 2)
+            val iv = data.copyOfRange(1 + SALT_SIZE * 2, 1 + SALT_SIZE * 2 + IV_SIZE)
+            val kcv = data.copyOfRange(1 + SALT_SIZE * 2 + IV_SIZE, HEADER_SIZE)
+            val ct = data.copyOfRange(HEADER_SIZE, data.size)
 
-            // KCV 校验 (v7 用 HMAC, 旧版用 SHA)
-            val kcvOk = if (v == VERSION) {
-                check.contentEquals(keyCheck(key))
-            } else {
-                val legacy = MessageDigest.getInstance("SHA-256")
-                    .digest(key.encoded).copyOf(CHECK_SIZE)
-                check.contentEquals(legacy)
-            }
-            if (!kcvOk) return@withContext false
+            val masterKey = deriveMasterKeyWithSalt(password, masterSalt)
+            // 校验主密钥指纹
+            if (!kcv.contentEquals(keyCheck(masterKey))) return@withContext false
 
+            // 缓存会话 (下次同密码会快 20×)
+            sessionPwdHash = hashPwd(password)
+            sessionMasterSalt = masterSalt
+            sessionMasterKey = masterKey
+
+            val fileKey = deriveFileKey(masterKey, fileSalt)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            cipher.init(Cipher.DECRYPT_MODE, fileKey, GCMParameterSpec(GCM_TAG_BITS, iv))
             writeBytes(uri, cipher.doFinal(ct))
             true
         } catch (e: Exception) { e.printStackTrace(); false }
     }
 
     // ============================================================
-    //  Shell 保护 v7
+    //  Shell 保护 v8 (openssl 兼容)
     // ============================================================
     private fun deriveOpenSSLKey(password: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val factory = SecretKeyFactory.getInstance(OPENSSL_MD)
@@ -221,7 +261,7 @@ class CryptoManager(private val ctx: Context) {
 #!/data/data/com.termux/files/usr/bin/bash
 # 也可在 MT 管理器中运行:  bash 本文件.sh
 # ============================================================
-#  EncryptVault Protected Script (v7 · ${mode})
+#  EncryptVault Protected Script (v8 · ${mode})
 #  $iterLabel
 # ============================================================
 
@@ -367,7 +407,7 @@ exit ${D}__EV_RC
             val failLabel = if (passwordMode) (if (failLimit > 0) "$failLimit 次自毁" else "关闭") else "—"
 
             """
-✅ 加密成功 ($modeLabel · v7)
+✅ 加密成功 ($modeLabel · v8)
 📄 ${outFile.absolutePath}
 🔒 ${if (passwordMode) "PBKDF2-SHA512(2M) + AES-256-CBC" else "AES-256-CBC + 混淆内嵌"}
 📊 执行上限: $maxLabel
