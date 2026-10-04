@@ -10,8 +10,8 @@ android {
         applicationId = "com.encryptvault.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "8.0.0"
+        versionCode = 9
+        versionName = "9.0.0"
     }
     buildFeatures { compose = true }
     compileOptions {

@@ -19,36 +19,34 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-data class FileItem(
-    val uri: Uri, val name: String, val size: String,
-    val status: ProcessStatus = ProcessStatus.PENDING
-)
-
+data class FileItem(val uri: Uri, val name: String, val size: String,
+    val status: ProcessStatus = ProcessStatus.PENDING)
 enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val VERSION: Byte = 0x08
+        private const val VERSION: Byte = 0x09
         private const val SALT_SIZE = 16
         private const val IV_SIZE = 16
         private const val CHECK_SIZE = 8
-        // 主密钥: PBKDF2-HMAC-SHA512 2M 轮 (会话内只跑一次)
         private const val PBKDF2_ITER = 2_000_000
         private const val PBKDF2_PRF = "PBKDF2WithHmacSHA512"
         private const val KEY_BITS = 256
         private const val GCM_TAG_BITS = 128
-        // Shell: openssl 兼容
         private const val OPENSSL_ITER = 2_000_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA512"
-        private const val HKDF_INFO = "EncryptVault-file-v8"
-        // v8 文件格式: [1B ver][16B masterSalt][16B fileSalt][16B IV][8B KCV][密文]
+        private const val HKDF_INFO = "EncryptVault-file-v9"
         private const val HEADER_SIZE = 1 + SALT_SIZE + SALT_SIZE + IV_SIZE + CHECK_SIZE
+        // 32 字节固定混淆密钥 R (无密码模式用)
+        private val XOR_R = byteArrayOf(
+            0x3A, 0x7F, 0x2C, 0x91.toByte(), 0x4E, 0xB5.toByte(), 0x11, 0x63,
+            0xD7.toByte(), 0x8A.toByte(), 0x25, 0xF9.toByte(), 0x06, 0x44, 0xBB.toByte(), 0x72,
+            0x9D.toByte(), 0xE3.toByte(), 0x58, 0xAF.toByte(), 0x31, 0x84.toByte(), 0xCD.toByte(), 0x1A,
+            0x76, 0xE8.toByte(), 0x50, 0x02, 0x9B.toByte(), 0x35, 0xC1.toByte(), 0x68)
+        private val R_HEX = XOR_R.joinToString("") { "%02x".format(it) }
     }
 
-    // ============================================================
-    //  会话缓存 (核心 20× 加速)
-    // ============================================================
     private var sessionPwdHash: String? = null
     private var sessionMasterSalt: ByteArray? = null
     private var sessionMasterKey: SecretKeySpec? = null
@@ -58,39 +56,30 @@ class CryptoManager(private val ctx: Context) {
         return d.joinToString("") { "%02x".format(it) }
     }
 
-    /** 确保会话主密钥已派生。首次调用跑 2M 轮 PBKDF2, 之后直接命中缓存。 */
     private fun ensureMasterKey(password: String): Pair<ByteArray, SecretKeySpec> {
         val h = hashPwd(password)
-        if (sessionPwdHash == h && sessionMasterSalt != null && sessionMasterKey != null) {
+        if (sessionPwdHash == h && sessionMasterSalt != null && sessionMasterKey != null)
             return sessionMasterSalt!! to sessionMasterKey!!
-        }
         val salt = ByteArray(SALT_SIZE).also { SecureRandom().nextBytes(it) }
         val factory = SecretKeyFactory.getInstance(PBKDF2_PRF)
         val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITER, KEY_BITS)
         val key = SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
-        sessionPwdHash = h
-        sessionMasterSalt = salt
-        sessionMasterKey = key
+        sessionPwdHash = h; sessionMasterSalt = salt; sessionMasterKey = key
         return salt to key
     }
 
-    /** 使用指定 masterSalt 派生主密钥 (解密时用, 不覆盖会话状态) */
     private fun deriveMasterKeyWithSalt(password: String, salt: ByteArray): SecretKeySpec {
-        if (sessionMasterSalt?.contentEquals(salt) == true && sessionMasterKey != null) {
+        if (sessionMasterSalt?.contentEquals(salt) == true && sessionMasterKey != null)
             return sessionMasterKey!!
-        }
         val factory = SecretKeyFactory.getInstance(PBKDF2_PRF)
         val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITER, KEY_BITS)
         return SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
     }
 
-    /** HKDF-SHA256: 从主密钥 + fileSalt 快速派生文件子密钥 (约 0.1ms) */
     private fun deriveFileKey(masterKey: SecretKeySpec, fileSalt: ByteArray): SecretKeySpec {
-        // HKDF-Extract
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(masterKey.encoded, "HmacSHA256"))
         val prk = mac.doFinal(fileSalt)
-        // HKDF-Expand
         val mac2 = Mac.getInstance("HmacSHA256")
         mac2.init(SecretKeySpec(prk, "HmacSHA256"))
         val okm = mac2.doFinal(HKDF_INFO.toByteArray(Charsets.US_ASCII))
@@ -100,20 +89,13 @@ class CryptoManager(private val ctx: Context) {
     private fun keyCheck(key: SecretKeySpec): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key.encoded, "HmacSHA256"))
-        val tag = mac.doFinal("EncryptVault-KCV-v8".toByteArray(Charsets.US_ASCII))
-        return tag.copyOf(CHECK_SIZE)
+        return mac.doFinal("EncryptVault-KCV-v9".toByteArray(Charsets.US_ASCII)).copyOf(CHECK_SIZE)
     }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+    private fun sha16(data: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(data).copyOf(8).toHex()
 
-    private fun sha16(data: ByteArray): String {
-        val d = MessageDigest.getInstance("SHA-256").digest(data)
-        return d.copyOf(8).toHex()
-    }
-
-    // ============================================================
-    //  公开 API
-    // ============================================================
     fun getFileInfo(uri: Uri): FileItem? = try {
         ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
             if (c.moveToFirst()) {
@@ -135,12 +117,10 @@ class CryptoManager(private val ctx: Context) {
 
     private fun readBytes(uri: Uri): ByteArray =
         ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
-
     private fun writeBytes(uri: Uri, data: ByteArray) {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data) }
     }
 
-    // ---- 加密: 使用会话主密钥 (第一次慢, 之后快) ----
     suspend fun encryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val plain = readBytes(uri)
@@ -149,57 +129,66 @@ class CryptoManager(private val ctx: Context) {
             val iv = ByteArray(IV_SIZE).also { SecureRandom().nextBytes(it) }
             val fileKey = deriveFileKey(masterKey, fileSalt)
             val kcv = keyCheck(masterKey)
-
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, fileKey, GCMParameterSpec(GCM_TAG_BITS, iv))
             val ct = cipher.doFinal(plain)
-
             val out = ByteArray(HEADER_SIZE + ct.size)
             out[0] = VERSION
             System.arraycopy(masterSalt, 0, out, 1, SALT_SIZE)
             System.arraycopy(fileSalt, 0, out, 1 + SALT_SIZE, SALT_SIZE)
-            System.arraycopy(iv, 0, out, 1 + SALT_SIZE + SALT_SIZE, IV_SIZE)
-            System.arraycopy(kcv, 0, out, 1 + SALT_SIZE + SALT_SIZE + IV_SIZE, CHECK_SIZE)
+            System.arraycopy(iv, 0, out, 1 + SALT_SIZE * 2, IV_SIZE)
+            System.arraycopy(kcv, 0, out, 1 + SALT_SIZE * 2 + IV_SIZE, CHECK_SIZE)
             System.arraycopy(ct, 0, out, HEADER_SIZE, ct.size)
-            writeBytes(uri, out)
-            true
+            writeBytes(uri, out); true
         } catch (e: Exception) { e.printStackTrace(); false }
     }
 
-    // ---- 解密: 从文件读取 masterSalt, 主密钥可能命中缓存 ----
     suspend fun decryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val data = readBytes(uri)
-            if (data.size < HEADER_SIZE + 16) return@withContext false
-            val v = data[0]
-            if (v != VERSION) return@withContext false
-
+            if (data.size < HEADER_SIZE + 16 || data[0] != VERSION) return@withContext false
             val masterSalt = data.copyOfRange(1, 1 + SALT_SIZE)
             val fileSalt = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE * 2)
             val iv = data.copyOfRange(1 + SALT_SIZE * 2, 1 + SALT_SIZE * 2 + IV_SIZE)
             val kcv = data.copyOfRange(1 + SALT_SIZE * 2 + IV_SIZE, HEADER_SIZE)
             val ct = data.copyOfRange(HEADER_SIZE, data.size)
-
             val masterKey = deriveMasterKeyWithSalt(password, masterSalt)
-            // 校验主密钥指纹
             if (!kcv.contentEquals(keyCheck(masterKey))) return@withContext false
-
-            // 缓存会话 (下次同密码会快 20×)
-            sessionPwdHash = hashPwd(password)
-            sessionMasterSalt = masterSalt
-            sessionMasterKey = masterKey
-
+            sessionPwdHash = hashPwd(password); sessionMasterSalt = masterSalt; sessionMasterKey = masterKey
             val fileKey = deriveFileKey(masterKey, fileSalt)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, fileKey, GCMParameterSpec(GCM_TAG_BITS, iv))
-            writeBytes(uri, cipher.doFinal(ct))
-            true
+            writeBytes(uri, cipher.doFinal(ct)); true
         } catch (e: Exception) { e.printStackTrace(); false }
     }
 
     // ============================================================
-    //  Shell 保护 v8 (openssl 兼容)
+    //  无密码模式 v9 — 48B 材料 + XOR 循环 + 6 分片
     // ============================================================
+    private fun genNopass(plain: ByteArray): Triple<String, String, List<String>> {
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val iv = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val km = key + iv  // 48 字节
+
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        val ct = cipher.doFinal(plain)
+        val ctB64 = Base64.encodeToString(ct, Base64.NO_WRAP)
+
+        val khex = km.toHex()  // 96 字符
+        // XOR 混淆 (按字节, 96 hex 字符 = 48 字节)
+        val encHex = StringBuilder()
+        for (i in 0 until 48) {
+            val b = khex.substring(i * 2, i * 2 + 2).toInt(16)
+            val r = XOR_R[i % 32].toInt() and 0xFF
+            encHex.append("%02x".format(b xor r))
+        }
+        val encStr = encHex.toString()
+        // 分成 6 段, 每段 16 字符
+        val segs = (0 until 6).map { encStr.substring(it * 16, (it + 1) * 16) }
+        return Triple(ctB64, R_HEX, segs)
+    }
+
     private fun deriveOpenSSLKey(password: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val factory = SecretKeyFactory.getInstance(OPENSSL_MD)
         val spec = PBEKeySpec(password.toCharArray(), salt, OPENSSL_ITER, 48 * 8)
@@ -216,7 +205,6 @@ class CryptoManager(private val ctx: Context) {
             val src = File(inputPath.trim())
             if (!src.exists()) return@withContext "❌ 源文件不存在"
             if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
-
             val raw = outputPathRaw.trim().ifBlank { src.parent ?: "/sdcard" }
             val baseName = src.nameWithoutExtension + "-protected.sh"
             val outFile = run {
@@ -224,11 +212,11 @@ class CryptoManager(private val ctx: Context) {
                 if (f.isDirectory || raw.endsWith("/")) File(f, baseName) else f
             }
             outFile.parentFile?.mkdirs()
-
             val plain = src.readBytes()
             val D = "${'$'}"
             val b64: String
-            val keyRevHex: String
+            val rHex: String
+            val segs: List<String>
 
             if (passwordMode) {
                 val salt = ByteArray(8).also { SecureRandom().nextBytes(it) }
@@ -241,27 +229,32 @@ class CryptoManager(private val ctx: Context) {
                 System.arraycopy(salt, 0, blob, 8, 8)
                 System.arraycopy(ct, 0, blob, 16, ct.size)
                 b64 = Base64.encodeToString(blob, Base64.NO_WRAP)
-                keyRevHex = ""
+                rHex = ""; segs = listOf("", "", "", "", "", "")
             } else {
-                val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
-                val iv = ByteArray(16).also { SecureRandom().nextBytes(it) }
-                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-                cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-                val ct = cipher.doFinal(plain)
-                b64 = Base64.encodeToString(ct, Base64.NO_WRAP)
-                keyRevHex = (key + iv).toHex().reversed()
+                val (b, r, s) = genNopass(plain)
+                b64 = b; rHex = r; segs = s
             }
 
             val id = sha16(plain)
             val mode = if (passwordMode) "password" else "nopass"
             val iterLabel = if (passwordMode) "PBKDF2-HMAC-SHA512 (2,000,000 轮) + AES-256-CBC"
-                            else "AES-256-CBC + 混淆内嵌密钥"
+                            else "AES-256-CBC + 48B 混淆材料 6 分片 (军工级)"
+
+            val nopassVars = if (!passwordMode) """
+__EV_P1='${segs[0]}'
+__EV_P2='${segs[1]}'
+__EV_P3='${segs[2]}'
+__EV_P4='${segs[3]}'
+__EV_P5='${segs[4]}'
+__EV_P6='${segs[5]}'
+__EV_R='$rHex'
+""" else ""
 
             val tmpl = """
 #!/data/data/com.termux/files/usr/bin/bash
 # 也可在 MT 管理器中运行:  bash 本文件.sh
 # ============================================================
-#  EncryptVault Protected Script (v8 · ${mode})
+#  EncryptVault Protected Script (v9 · ${mode})
 #  $iterLabel
 # ============================================================
 
@@ -282,7 +275,7 @@ command -v openssl >/dev/null 2>&1 || {
 
 __EV_MODE='${mode}'
 __EV_D='$b64'
-__EV_K_REV='$keyRevHex'
+$nopassVars
 __EV_MAX=$maxRuns
 __EV_FAIL=$failLimit
 __EV_ID='$id'
@@ -363,12 +356,28 @@ if [ "${D}__EV_MODE" = "password" ]; then
         exit 1
     fi
 else
-    printf '%s' "${D}__EV_K_REV" | rev > "${D}{__EV_TMP}.k" 2>/dev/null
-    unset __EV_K_REV
-    [ -s "${D}{__EV_TMP}.k" ] || { printf '❌ 密钥损坏\n' >&2; exit 1; }
-    __EV_KEY_HEX=$(cut -c1-64  "${D}{__EV_TMP}.k")
-    __EV_IV_HEX=$(cut -c65-96 "${D}{__EV_TMP}.k")
-    rm -f "${D}{__EV_TMP}.k"
+    # ==== 无密码模式: 6 段拼接 + XOR 循环还原 + hex 解码 ====
+    __EV_ALL="${D}{__EV_P1}${D}{__EV_P2}${D}{__EV_P3}${D}{__EV_P4}${D}{__EV_P5}${D}{__EV_P6}"
+    unset __EV_P1 __EV_P2 __EV_P3 __EV_P4 __EV_P5 __EV_P6
+
+    # 96 次 XOR 循环还原 hex
+    __EV_KHEX=""
+    __EV_I=0
+    while [ ${D}__EV_I -lt 96 ]; do
+        __EV_B=${D}{__EV_ALL:${D}__EV_I:2}
+        __EV_BIDX=${D}(( __EV_I / 2 ))
+        __EV_RIDX=${D}(( __EV_BIDX % 32 ))
+        __EV_RC=${D}{__EV_R:${D}(( __EV_RIDX * 2 )):2}
+        __EV_X=${D}(( (16#${D}__EV_B) ^ (16#${D}__EV_RC) ))
+        __EV_KHEX="${D}{__EV_KHEX}${D}(printf '%02x' ${D}__EV_X)"
+        __EV_I=${D}(( __EV_I + 2 ))
+    done
+    unset __EV_ALL __EV_R __EV_I __EV_B __EV_BIDX __EV_RIDX __EV_RC __EV_X
+
+    __EV_KEY_HEX=$(printf '%s' "${D}__EV_KHEX" | cut -c1-64)
+    __EV_IV_HEX=$(printf '%s' "${D}__EV_KHEX" | cut -c65-96)
+    unset __EV_KHEX
+
     openssl enc -d -aes-256-cbc -K "${D}__EV_KEY_HEX" -iv "${D}__EV_IV_HEX" \
         -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
     __EV_RC=${D}?
@@ -402,14 +411,14 @@ exit ${D}__EV_RC
             outFile.writeText(tmpl)
             outFile.setExecutable(true)
 
-            val modeLabel = if (passwordMode) "密码模式" else "无密码模式"
+            val modeLabel = if (passwordMode) "密码模式" else "无密码模式 (军工级)"
             val maxLabel = if (maxRuns > 0) "$maxRuns 次" else "无限"
             val failLabel = if (passwordMode) (if (failLimit > 0) "$failLimit 次自毁" else "关闭") else "—"
 
             """
-✅ 加密成功 ($modeLabel · v8)
+✅ 加密成功 ($modeLabel · v9)
 📄 ${outFile.absolutePath}
-🔒 ${if (passwordMode) "PBKDF2-SHA512(2M) + AES-256-CBC" else "AES-256-CBC + 混淆内嵌"}
+🔒 ${if (passwordMode) "PBKDF2-SHA512(2M) + AES-256-CBC" else "AES-256-CBC + 48B/6片/XOR混淆"}
 📊 执行上限: $maxLabel
 💥 自毁方式: shred 覆盖 3 次
 🛡 umask 077 · trap 全覆盖
@@ -452,12 +461,30 @@ exit ${D}__EV_RC
                 val kp = deriveOpenSSLKey(password, salt)
                 key = kp.first; iv = kp.second
             } else {
-                val kRe = Regex("""__EV_K_REV\s*=\s*['"]([0-9a-fA-F]+)['"]""")
-                val kM = kRe.find(text) ?: return@withContext "❌ 缺少密钥字段"
-                val revHex = kM.groupValues[1].reversed()
-                if (revHex.length != 96) return@withContext "❌ 密钥长度错误"
-                key = revHex.substring(0, 64).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                iv  = revHex.substring(64, 96).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                // v9 无密码模式解保护
+                val pRegexes = listOf(
+                    Regex("""__EV_P1\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
+                    Regex("""__EV_P2\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
+                    Regex("""__EV_P3\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
+                    Regex("""__EV_P4\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
+                    Regex("""__EV_P5\s*=\s*['"]([0-9a-fA-F]+)['"]"""),
+                    Regex("""__EV_P6\s*=\s*['"]([0-9a-fA-F]+)['"]""")
+                )
+                val segs = pRegexes.map { re ->
+                    re.find(text)?.groupValues?.get(1) ?: return@withContext "❌ 缺少分片字段"
+                }
+                val encStr = segs.joinToString("")
+
+                // XOR 还原
+                val khexSb = StringBuilder()
+                for (i in 0 until 48) {
+                    val b = encStr.substring(i * 2, i * 2 + 2).toInt(16)
+                    val r = XOR_R[i % 32].toInt() and 0xFF
+                    khexSb.append("%02x".format(b xor r))
+                }
+                val khex = khexSb.toString()
+                key = khex.substring(0, 64).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                iv = khex.substring(64, 96).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                 ct = Base64.decode(b64, Base64.NO_WRAP)
             }
 
@@ -483,9 +510,7 @@ exit ${D}__EV_RC
 📄 ${outFile.absolutePath}
 📦 ${plain.size} 字节
 """.trimIndent()
-        } catch (e: Exception) {
-            "❌ 解保护失败: ${e.message}"
-        }
+        } catch (e: Exception) { "❌ 解保护失败: ${e.message}" }
     }
 
     private fun formatSize(bytes: Long): String = when {
