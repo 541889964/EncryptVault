@@ -13,12 +13,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val items = SecurityChecker.check(this)
-        val hasFatal = SecurityChecker.hasFatal(items)
+        val failed = items.firstOrNull { !it.passed }
 
-        if (hasFatal) {
-            val firstFatal = items.first { !it.passed && it.fatal }
+        if (failed != null) {
             Toast.makeText(this,
-                "❌ ${firstFatal.name}: ${firstFatal.detail}",
+                "❌ ${failed.name}: ${failed.detail}",
                 Toast.LENGTH_LONG).show()
             finishAndRemoveTask()
             return
