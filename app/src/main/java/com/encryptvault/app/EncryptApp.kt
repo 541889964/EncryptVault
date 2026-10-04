@@ -206,7 +206,7 @@ fun AnimeStrengthBar(p: String) {
 }
 
 @Composable
-fun EncryptApp(securityReport: SecurityChecker.Report? = null) {
+fun EncryptApp(securityReport: List<CheckItem>? = null) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val crypto = remember { CryptoManager(ctx) }
@@ -762,7 +762,9 @@ fun AnimeModeChip(text: String, active: Boolean, modifier: Modifier, onClick: ()
 }
 
 @Composable
-fun SettingsTab(securityReport: SecurityChecker.Report) {
+fun SettingsTab(items: List<CheckItem>) {
+    val fatal = items.any { !it.passed && it.fatal }
+    val anyIssue = items.any { !it.passed }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 12.dp)) {
@@ -773,14 +775,25 @@ fun SettingsTab(securityReport: SecurityChecker.Report) {
                     Box(Modifier.size(52.dp).clip(RoundedCornerShape(16.dp))
                         .background(Brush.linearGradient(listOf(
                             AnimeColors.SakuraDeep, AnimeColors.Lavender, AnimeColors.Sky))),
-                        contentAlignment = Alignment.Center) { Text("🛡️", fontSize = 26.sp) }
+                        contentAlignment = Alignment.Center) {
+                        Text(if (!anyIssue) "🛡️" else "⚠️", fontSize = 26.sp)
+                    }
                     Spacer(Modifier.width(14.dp))
                     Column {
-                        Text(if (securityReport.clean) "环境安全" else "环境存在风险",
-                            color = if (securityReport.clean) AnimeColors.Mint else AnimeColors.Danger,
+                        Text(
+                            when {
+                                !anyIssue -> "环境安全"
+                                fatal -> "存在致命风险"
+                                else -> "存在非致命告警"
+                            },
+                            color = when {
+                                !anyIssue -> AnimeColors.Mint
+                                fatal -> AnimeColors.Danger
+                                else -> Color(0xFFFFA726)
+                            },
                             fontWeight = FontWeight.Black, fontSize = 18.sp)
                         Spacer(Modifier.height(3.dp))
-                        Text("APK 内嵌反逆向 · 8 项实时检测",
+                        Text("${items.count { it.passed }}/${items.size} 项通过",
                             color = AnimeColors.Sakura, fontSize = 11.sp,
                             fontWeight = FontWeight.Bold)
                     }
@@ -794,57 +807,51 @@ fun SettingsTab(securityReport: SecurityChecker.Report) {
                     Text("🛡️ 环境检测", color = AnimeColors.TextPrimary,
                         fontWeight = FontWeight.Black, fontSize = 15.sp)
                     Spacer(Modifier.height(10.dp))
-                    SecRow("Root", securityReport.root)
-                    SecRow("Frida", securityReport.frida)
-                    SecRow("Xposed", securityReport.xposed)
-                    SecRow("调试器", securityReport.debugger)
-                    SecRow("模拟器", securityReport.emulator)
-                    SecRow("虚拟多开", securityReport.virtualApp)
-                    SecRow("APK 签名", securityReport.signatureValid)
-                    SecRow("反编译重打包", securityReport.repackaged)
-                }
-            }
-        }
-
-        if (!securityReport.clean) {
-            item(key = "warn", contentType = "warn") {
-                AnimeCard(Modifier.fillMaxWidth()) {
-                    Column {
-                        Text("⚠️ 检测到风险", color = AnimeColors.Danger,
-                            fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Spacer(Modifier.height(8.dp))
-                        securityReport.issues.forEach { issue ->
-                            Text("· $issue", color = AnimeColors.TextPrimary,
-                                fontSize = 12.sp, lineHeight = 20.sp)
+                    items.forEach { item ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.Top) {
+                            Text(
+                                if (item.passed) "✅" else if (item.fatal) "❌" else "⚠️",
+                                fontSize = 13.sp)
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(item.name, color = AnimeColors.TextPrimary,
+                                    fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Text(item.detail, color = AnimeColors.TextSecondary.copy(0.7f),
+                                    fontSize = 11.sp)
+                            }
+                            Text(
+                                if (item.passed) "通过" else if (item.fatal) "阻断" else "警告",
+                                color = when {
+                                    item.passed -> AnimeColors.Mint
+                                    item.fatal -> AnimeColors.Danger
+                                    else -> Color(0xFFFFA726)
+                                },
+                                fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
         }
 
-        item(key = "shell", contentType = "shell") {
+        item(key = "crypto", contentType = "crypto") {
             AnimeCard(Modifier.fillMaxWidth()) {
                 Column {
-                    Text("🔒 Shell 保护 (12 + 3 项)", color = AnimeColors.TextPrimary,
+                    Text("🔐 v13 加密参数", color = AnimeColors.TextPrimary,
                         fontWeight = FontWeight.Black, fontSize = 15.sp)
                     Spacer(Modifier.height(10.dp))
-                    Text(
-                        "· 反调试 4 项 (x/XTRACEFD/SHELLOPTS/PS4)\n" +
-                        "· TracerPid 检测\n" +
-                        "· LD_PRELOAD 检测\n" +
-                        "· 拒绝 source / 软链\n" +
-                        "· 父进程分析工具检测\n" +
-                        "· 命令覆盖检测\n" +
-                        "· SHA256 自校验\n" +
-                        "· 三层密钥变换\n" +
-                        "· 设备指纹绑定 (可选)\n" +
-                        "· 时间窗口 (可选)\n" +
-                        "· shred × 2 自毁\n" +
-                        "· 反爬虫板: 预期文件名\n" +
-                        "· 反爬虫板: 压缩包/临时目录\n" +
-                        "· 反爬虫板: 采集目录黑名单",
-                        color = AnimeColors.TextSecondary.copy(0.85f),
-                        fontSize = 12.sp, lineHeight = 19.sp)
+                    InfoRow("文件算法", "AES-256-GCM")
+                    InfoRow("文件 PRF", "PBKDF2-HMAC-SHA512")
+                    InfoRow("文件轮数", "5,000,000")
+                    InfoRow("主密钥", "512 bit")
+                    InfoRow("子密钥", "HKDF-SHA512")
+                    InfoRow("Salt", "32B + 32B")
+                    InfoRow("完整性", "GCM tag + HMAC-SHA256")
+                    InfoRow("失败延迟", "1.5s 抗爆破")
+                    InfoRow("密钥擦除", "Arrays.fill(0)")
+                    InfoRow("Shell 密钥", "PBKDF2-SHA512 · 2M")
+                    InfoRow("Shell 变换", "XOR + 反序 + CONST")
+                    InfoRow("Shell 反逆向", "15 项")
                 }
             }
         }
@@ -856,26 +863,12 @@ fun SettingsTab(securityReport: SecurityChecker.Report) {
                         fontWeight = FontWeight.Black, fontSize = 15.sp)
                     Spacer(Modifier.height(8.dp))
                     InfoRow("应用", "EncryptVault")
-                    InfoRow("版本", "12.0.0")
+                    InfoRow("版本", "13.0.0")
                     InfoRow("网络", "零联网")
                     InfoRow("数据", "零收集")
                 }
             }
         }
-    }
-}
-
-@Composable
-fun SecRow(label: String, ok: Boolean) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Text(if (ok) "✅" else "❌", fontSize = 13.sp)
-        Spacer(Modifier.width(8.dp))
-        Text(label, color = AnimeColors.TextPrimary, fontSize = 12.sp)
-        Spacer(Modifier.weight(1f))
-        Text(if (ok) "通过" else "异常",
-            color = if (ok) AnimeColors.Mint else AnimeColors.Danger,
-            fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
