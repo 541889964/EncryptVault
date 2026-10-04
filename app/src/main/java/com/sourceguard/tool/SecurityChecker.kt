@@ -53,7 +53,7 @@ object SecurityChecker {
         val s = arr.firstOrNull() ?: return CheckItem("签名", false, "null", true)
         val h = MessageDigest.getInstance("SHA-256")
             .digest(s.toByteArray())
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
         if (h != EXPECTED_SIG) return CheckItem("签名", false, "SHA=${h.take(12)}...", true)
         return CheckItem("签名", true, "xuanyi 通过", true)
     }

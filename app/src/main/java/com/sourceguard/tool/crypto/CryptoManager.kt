@@ -53,7 +53,7 @@ class CryptoManager(private val ctx: Context) {
     private var sMs: ByteArray? = null
     private var sMk: ByteArray? = null
 
-    private fun ByteArray.hx(): String = joinToString("") { "%02x".format(it) }
+    private fun ByteArray.hx(): String = joinToString("") { "%02x".format(it.toInt() and 0xFF) }
 
     private fun s256(s: String): String =
         MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8)).hx()
