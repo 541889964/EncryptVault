@@ -8,10 +8,10 @@ android {
     compileSdk = 35
     defaultConfig {
         applicationId = "com.encryptvault.app"
-        minSdk = 21
+        minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "3.0.0"
+        versionCode = 4
+        versionName = "4.0.0"
     }
     buildFeatures { compose = true }
     compileOptions {

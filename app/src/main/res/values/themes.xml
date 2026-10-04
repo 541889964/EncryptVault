@@ -2,6 +2,7 @@
 <resources>
     <style name="Theme.EncryptVault" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:statusBarColor">#00000000</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">#00000000</item>
     </style>
 </resources>

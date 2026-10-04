@@ -12,14 +12,16 @@ private val DarkColorScheme = darkColorScheme(
     primary = Color(0xFF6C63FF),
     onPrimary = Color.White,
     secondary = Color(0xFFFF6584),
-    background = Color(0xFF0F0C29),
+    background = Color(0xFF0A0E27),
     surface = Color(0x33111111),
     onSurface = Color.White
 )
 
 private val Typography = Typography(
-    bodyLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Normal, fontSize = 16.sp),
-    titleLarge = TextStyle(fontFamily = FontFamily.SansSerif, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+    bodyLarge = TextStyle(fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Normal, fontSize = 16.sp),
+    titleLarge = TextStyle(fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Bold, fontSize = 22.sp)
 )
 
 @Composable
