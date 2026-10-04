@@ -15,10 +15,11 @@ class MainActivity : ComponentActivity() {
         val items = SecurityChecker.check(this)
         val hasFatal = SecurityChecker.hasFatal(items)
 
-        // 只有致命项 (Frida/Xposed/调试器/APK 路径) 才阻断
-        // Root / 模拟器 / 多开 / 重打包 → 仅警告, 不阻断
         if (hasFatal) {
-            Toast.makeText(this, "❌ 检测到高危逆向环境，拒绝运行", Toast.LENGTH_LONG).show()
+            val firstFatal = items.first { !it.passed && it.fatal }
+            Toast.makeText(this,
+                "❌ ${firstFatal.name}: ${firstFatal.detail}",
+                Toast.LENGTH_LONG).show()
             finishAndRemoveTask()
             return
         }

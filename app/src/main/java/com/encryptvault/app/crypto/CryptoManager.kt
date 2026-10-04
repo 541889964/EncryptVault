@@ -33,25 +33,23 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val MAGIC: Byte = 0x0D
+        private const val MAGIC: Byte = 0x0E
         private const val SALT_SZ = 32
         private const val IV_SZ = 12
         private const val TAG_BITS = 128
         private const val HMAC_SZ = 32
-        private const val PBKDF2_ITER = 5_000_000
+        private const val PBKDF2_ITER = 6_000_000
         private const val PBKDF2_PRF = "PBKDF2WithHmacSHA512"
         private const val MASTER_BITS = 512
         private const val OPENSSL_ITER = 2_000_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA512"
-        private const val HKDF_INFO_AES = "EncryptVault-v13-aes"
-        private const val HKDF_INFO_MAC = "EncryptVault-v13-mac"
+        private const val HKDF_INFO_AES = "EncryptVault-v14-aes"
+        private const val HKDF_INFO_MAC = "EncryptVault-v14-mac"
         private const val CONST_HEX =
             "a3f1c8e29b4d60715f2e8a3c9d17b5e4f028c6a9d3b7e15f824a6c0d9e3f7b12"
-        private const val FIXED_DK_FOR_NOBIND =
-            "7f3a5c9e1b8d2f604a7c3e5b9d1f8a2c6e4b0d7a9c3f5e1b8d4a6c2f0e7b5931"
 
-        private val SLEEP_WRONG_MS = 1500L
-        private val SLEEP_JITTER_MS = 500
+        private val SLEEP_WRONG = 1500L
+        private val SLEEP_JITTER = 500
     }
 
     private var sPwdHash: String? = null
@@ -87,9 +85,7 @@ class CryptoManager(private val ctx: Context) {
             return sMasterSalt!! to sMasterKey!!
         val salt = ByteArray(SALT_SZ).also { SecureRandom().nextBytes(it) }
         val key = deriveMaster(password, salt)
-        sPwdHash = h
-        sMasterSalt = salt
-        sMasterKey = key
+        sPwdHash = h; sMasterSalt = salt; sMasterKey = key
         return salt to key
     }
 
@@ -124,9 +120,6 @@ class CryptoManager(private val ctx: Context) {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data) }
     }
 
-    // ============================================================
-    //  加密
-    // ============================================================
     suspend fun encryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         var aesKey: ByteArray? = null
         var macKey: ByteArray? = null
@@ -140,17 +133,13 @@ class CryptoManager(private val ctx: Context) {
             macKey = hkdf(mKey, fSalt, HKDF_INFO_MAC, 32)
 
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(
-                Cipher.ENCRYPT_MODE,
-                SecretKeySpec(aesKey, "AES"),
-                GCMParameterSpec(TAG_BITS, iv)
-            )
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"),
+                GCMParameterSpec(TAG_BITS, iv))
             val ct = cipher.doFinal(plain)
 
             val hmac = Mac.getInstance("HmacSHA256")
             hmac.init(SecretKeySpec(macKey, "HmacSHA256"))
-            hmac.update(iv)
-            hmac.update(ct)
+            hmac.update(iv); hmac.update(ct)
             val tag = hmac.doFinal()
 
             val out = ByteArray(1 + SALT_SZ + SALT_SZ + IV_SZ + ct.size + HMAC_SZ)
@@ -165,17 +154,13 @@ class CryptoManager(private val ctx: Context) {
             writeBytes(uri, out)
             true
         } catch (e: Exception) {
-            e.printStackTrace()
-            false
+            e.printStackTrace(); false
         } finally {
             aesKey?.let { Arrays.fill(it, 0) }
             macKey?.let { Arrays.fill(it, 0) }
         }
     }
 
-    // ============================================================
-    //  解密
-    // ============================================================
     suspend fun decryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         var aesKey: ByteArray? = null
         var macKey: ByteArray? = null
@@ -183,7 +168,7 @@ class CryptoManager(private val ctx: Context) {
             val data = readBytes(uri)
             val need = 1 + SALT_SZ + SALT_SZ + IV_SZ + 16 + HMAC_SZ
             if (data.size < need || data[0] != MAGIC) {
-                Thread.sleep(SLEEP_WRONG_MS)
+                Thread.sleep(SLEEP_WRONG)
                 return@withContext false
             }
 
@@ -201,30 +186,23 @@ class CryptoManager(private val ctx: Context) {
 
             val hmac = Mac.getInstance("HmacSHA256")
             hmac.init(SecretKeySpec(macKey, "HmacSHA256"))
-            hmac.update(iv)
-            hmac.update(ct)
+            hmac.update(iv); hmac.update(ct)
             val calcTag = hmac.doFinal()
             if (!MessageDigest.isEqual(storedTag, calcTag)) {
-                Thread.sleep(SLEEP_WRONG_MS + SecureRandom().nextInt(SLEEP_JITTER_MS).toLong())
+                Thread.sleep(SLEEP_WRONG + SecureRandom().nextInt(SLEEP_JITTER).toLong())
                 return@withContext false
             }
 
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                SecretKeySpec(aesKey, "AES"),
-                GCMParameterSpec(TAG_BITS, iv)
-            )
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"),
+                GCMParameterSpec(TAG_BITS, iv))
             val plain = cipher.doFinal(ct)
             writeBytes(uri, plain)
 
-            sPwdHash = sha256Hex(password)
-            sMasterSalt = mSalt
-            sMasterKey = mKey
+            sPwdHash = sha256Hex(password); sMasterSalt = mSalt; sMasterKey = mKey
             true
         } catch (e: Exception) {
-            Thread.sleep(SLEEP_WRONG_MS)
-            false
+            Thread.sleep(SLEEP_WRONG); false
         } finally {
             aesKey?.let { Arrays.fill(it, 0) }
             macKey?.let { Arrays.fill(it, 0) }
@@ -232,7 +210,7 @@ class CryptoManager(private val ctx: Context) {
     }
 
     // ============================================================
-    //  Shell 保护
+    //  Shell 保护 v14 — 修复 index=66
     // ============================================================
     private fun deriveOpenSSLKey(pwd: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val f = SecretKeyFactory.getInstance(OPENSSL_MD)
@@ -241,24 +219,34 @@ class CryptoManager(private val ctx: Context) {
         return d.copyOfRange(0, 32) to d.copyOfRange(32, 48)
     }
 
-    private fun transform3(key: ByteArray, iv: ByteArray, dkHex: String): List<String> {
-        val km = (key + iv).hex()
-        val t1 = StringBuilder()
+    // 关键修复: dk 用 SHA-512, 取前 96 hex (48 字节) 与 km 长度对齐
+    private fun transform3(key: ByteArray, iv: ByteArray, deviceTag: String): List<String> {
+        val km = (key + iv).hex()               // 48 字节 = 96 hex
+        val dkFull = MessageDigest.getInstance("SHA-512")
+            .digest(deviceTag.toByteArray(Charsets.UTF_8))
+            .hex()
+        val dk = dkFull.take(96)                // 与 km 等长
+
+        // 层1: XOR
+        val t1 = StringBuilder(96)
         var i = 0
         while (i < 96) {
-            t1.append("%02x".format(km.substring(i, i + 2).toInt(16) xor dkHex.substring(i, i + 2).toInt(16)))
+            val b = km.substring(i, i + 2).toInt(16)
+            val d = dk.substring(i, i + 2).toInt(16)
+            t1.append("%02x".format(b xor d))
             i += 2
         }
-        val t2 = StringBuilder()
+        // 层2: 4-hex 单元反序
+        val t2 = StringBuilder(96)
+        i = 0
+        while (i < 96) { t2.insert(0, t1.substring(i, i + 4)); i += 4 }
+        // 层3: XOR CONST
+        val t3 = StringBuilder(96)
         i = 0
         while (i < 96) {
-            t2.insert(0, t1.substring(i, i + 4))
-            i += 4
-        }
-        val t3 = StringBuilder()
-        i = 0
-        while (i < 96) {
-            t3.append("%02x".format(t2.substring(i, i + 2).toInt(16) xor CONST_HEX.substring(i, i + 2).toInt(16)))
+            val b = t2.substring(i, i + 2).toInt(16)
+            val c = CONST_HEX.substring(i, i + 2).toInt(16)
+            t3.append("%02x".format(b xor c))
             i += 2
         }
         val s = t3.toString()
@@ -266,14 +254,9 @@ class CryptoManager(private val ctx: Context) {
     }
 
     suspend fun protectShellScript(
-        inputPath: String,
-        outputPathRaw: String,
-        password: String,
-        passwordMode: Boolean,
-        maxRuns: Int,
-        failLimit: Int,
-        deviceBind: Boolean,
-        validDays: Int
+        inputPath: String, outputPathRaw: String, password: String,
+        passwordMode: Boolean, maxRuns: Int, failLimit: Int,
+        deviceBind: Boolean, validDays: Int
     ): String = withContext(Dispatchers.IO) {
         try {
             if (passwordMode && password.length < 8) return@withContext "❌ 密码至少 8 位"
@@ -319,23 +302,17 @@ class CryptoManager(private val ctx: Context) {
                 b64 = Base64.encodeToString(ct, Base64.NO_WRAP)
 
                 val ds = ByteArray(16).also { SecureRandom().nextBytes(it) }
-                val dk = if (deviceBind) {
-                    val md = MessageDigest.getInstance("SHA-256")
-                    md.update(ds)
-                    md.update("DEVICE_BOUND".toByteArray())
-                    md.digest().hex()
-                } else FIXED_DK_FOR_NOBIND
-                segs = transform3(k, iv, dk)
+                val tag = if (deviceBind) "DEVICE_BOUND" else "FIXED_MODE"
+                val fullTag = ds.hex() + ":" + tag
+                segs = transform3(k, iv, fullTag)
                 deviceSalt = ds.hex()
-                Arrays.fill(k, 0)
-                Arrays.fill(iv, 0)
+                Arrays.fill(k, 0); Arrays.fill(iv, 0)
             }
 
             val id = id16(plain)
             val mode = if (passwordMode) "password" else "nopass"
-            val expTs = if (validDays > 0) {
-                System.currentTimeMillis() / 1000L + validDays.toLong() * 86400L
-            } else 0L
+            val expTs = if (validDays > 0)
+                System.currentTimeMillis() / 1000L + validDays.toLong() * 86400L else 0L
             val bindFlag = if (deviceBind) "1" else "0"
 
             val nopassVars = if (!passwordMode) """
@@ -354,7 +331,7 @@ __EV_BIND=$bindFlag
 
             val tpl = """
 #!/data/data/com.termux/files/usr/bin/bash
-# EncryptVault Protected v13 ($mode) - Device-Bound
+# EncryptVault Protected v14 ($mode) - Device-Bound
 umask 077
 
 case "${D}-" in *x*) exit 1 ;; esac
@@ -459,12 +436,12 @@ else
         __EV_HN=$(hostname 2>/dev/null || echo "")
         __EV_MD=$(getprop ro.product.model 2>/dev/null || echo "")
         __EV_BR=$(getprop ro.product.brand 2>/dev/null || echo "")
-        __EV_FPR="${D}{__EV_HN}|${D}{__EV_MD}|${D}{__EV_BR}"
+        __EV_TAG="${D}__EV_SALT:DEVICE_BOUND"
     else
-        __EV_FPR="FIXED"
+        __EV_TAG="${D}__EV_SALT:FIXED_MODE"
     fi
-    __EV_DK=$(printf '%s%s' "${D}__EV_SALT" "${D}__EV_FPR" | sha256sum | awk '{print ${D}1}')
-    unset __EV_HN __EV_MD __EV_BR __EV_FPR __EV_SALT
+    __EV_DK=$(printf '%s' "${D}__EV_TAG" | sha512sum | awk '{print ${D}1}' | cut -c1-96)
+    unset __EV_HN __EV_MD __EV_BR __EV_TAG __EV_SALT
 
     __EV_T3="${D}{__EV_P1}${D}{__EV_P2}${D}{__EV_P3}${D}{__EV_P4}${D}{__EV_P5}${D}{__EV_P6}"
     unset __EV_P1 __EV_P2 __EV_P3 __EV_P4 __EV_P5 __EV_P6
@@ -540,16 +517,14 @@ exit ${D}__EV_RC
                 .digest(outFile.readBytes()).hex()
             outFile.appendText("#HASH:$selfHash\n")
 
-            "✅ 加密成功 (v13)\n📄 ${outFile.absolutePath}"
+            "✅ 加密成功 (v14)\n📄 ${outFile.absolutePath}"
         } catch (e: Exception) {
             "❌ 失败: ${e.message}"
         }
     }
 
     suspend fun unprotectShellScript(
-        inputPath: String,
-        outputPathRaw: String,
-        password: String
+        inputPath: String, outputPathRaw: String, password: String
     ): String = withContext(Dispatchers.IO) {
         try {
             val src = File(inputPath.trim())
@@ -577,12 +552,9 @@ exit ${D}__EV_RC
                 if (f.isDirectory || raw.endsWith("/")) File(f, outName) else f
             }
             outFile.parentFile?.mkdirs()
-            outFile.writeBytes(plain)
-            outFile.setExecutable(true)
+            outFile.writeBytes(plain); outFile.setExecutable(true)
             "✅ 已还原: ${outFile.absolutePath}"
-        } catch (e: Exception) {
-            "❌ 解保护失败: ${e.message}"
-        }
+        } catch (e: Exception) { "❌ 解保护失败: ${e.message}" }
     }
 
     private fun fmtSize(b: Long): String = when {
