@@ -8,11 +8,13 @@ import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.spec.KeySpec
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -28,12 +30,11 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        // 密文格式 v2: [1B version][16B salt][16B IV][4B keyCheck][密文+GCM Tag]
-        private const val VERSION: Byte = 0x02
+        private const val VERSION: Byte = 0x03
         private const val SALT_SIZE = 16
         private const val IV_SIZE = 16
-        private const val CHECK_SIZE = 4
-        private const val ITERATIONS = 200_000
+        private const val CHECK_SIZE = 8
+        private const val ITERATIONS = 600_000
         private const val KEY_BITS = 256
         private const val GCM_TAG_BITS = 128
         private const val HEADER_SIZE = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
@@ -67,20 +68,20 @@ class CryptoManager(private val ctx: Context) {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data) }
     }
 
-    // ---- 派生密钥 (PBKDF2 200,000 轮) ----
     private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
         val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_BITS)
         return SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
     }
 
-    // ---- 密钥校验值 (前 4 字节, 用于快速密码错误检测) ----
     private fun keyCheck(key: SecretKeySpec): ByteArray {
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val digest = MessageDigest.getInstance("SHA-256")
         return digest.digest(key.encoded).copyOf(CHECK_SIZE)
     }
 
-    // ---- 加密 ----
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+    // ---- 文件加密 ----
     suspend fun encryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val plain = readBytes(uri)
@@ -104,7 +105,7 @@ class CryptoManager(private val ctx: Context) {
         } catch (e: Exception) { e.printStackTrace(); false }
     }
 
-    // ---- 解密 ----
+    // ---- 文件解密 ----
     suspend fun decryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val data = readBytes(uri)
@@ -117,7 +118,6 @@ class CryptoManager(private val ctx: Context) {
             val ct = data.copyOfRange(HEADER_SIZE, data.size)
 
             val key = deriveKey(password, salt)
-            // 密码预校验 (避免 GCM 解密错误信息泄露)
             if (!storedCheck.contentEquals(keyCheck(key))) return@withContext false
 
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -128,7 +128,9 @@ class CryptoManager(private val ctx: Context) {
         } catch (e: Exception) { e.printStackTrace(); false }
     }
 
-    // ---- Shell 脚本双层保护 ----
+    // ============================================================
+    //  Shell 保护 (v3) — AES-256-CBC + openssl 兼容
+    // ============================================================
     suspend fun protectShellScript(inputPath: String, outputPathRaw: String): String =
         withContext(Dispatchers.IO) {
             try {
@@ -136,118 +138,123 @@ class CryptoManager(private val ctx: Context) {
                 if (!src.exists()) return@withContext "❌ 源文件不存在: $inputPath"
                 if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
 
-                // ---- 自动处理输出路径为目录的情况 ----
                 val raw = outputPathRaw.trim().ifBlank { src.parent ?: "/sdcard" }
                 val baseName = src.nameWithoutExtension + "-protected.sh"
                 val outFile = run {
                     val f = File(raw)
-                    if (f.isDirectory || raw.endsWith("/")) File(f, baseName)
-                    else f
+                    if (f.isDirectory || raw.endsWith("/")) File(f, baseName) else f
                 }
                 outFile.parentFile?.mkdirs()
 
-                val script = src.readText()
-
-                // ---- 第一层: AES-256-GCM ----
+                val plain = src.readBytes()
                 val rnd = SecureRandom()
-                val fileKey = ByteArray(32).also { rnd.nextBytes(it) }
-                val iv = ByteArray(12).also { rnd.nextBytes(it) }
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(fileKey, "AES"),
-                    GCMParameterSpec(GCM_TAG_BITS, iv))
-                val enc1 = cipher.doFinal(script.toByteArray(Charsets.UTF_8))
+                val key = ByteArray(32).also { rnd.nextBytes(it) }
+                val iv  = ByteArray(16).also { rnd.nextBytes(it) }
 
-                // ---- 第二层: XOR 混淆 + 分片 ----
-                val obf = ByteArray(enc1.size)
-                for (i in enc1.indices) {
-                    obf[i] = (enc1[i].toInt() xor ((fileKey[i % 32].toInt() + (i * 131)) and 0xFF)).toByte()
-                }
-                // 反转字节序
-                obf.reverse()
+                // AES-256-CBC / PKCS5Padding 与 openssl enc -aes-256-cbc 兼容
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                val ct = cipher.doFinal(plain)
 
-                val keyB64 = Base64.encodeToString(fileKey, Base64.NO_WRAP)
-                val ivB64  = Base64.encodeToString(iv, Base64.NO_WRAP)
-                val dataB64 = Base64.encodeToString(obf, Base64.NO_WRAP)
+                val keyHex = key.toHex()
+                val ivHex  = iv.toHex()
+                val dataB64 = Base64.encodeToString(ct, Base64.NO_WRAP)
 
-                // ---- 生成自解密保护脚本 ----
                 val tmpl = """
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================
-#  EncryptVault Protected Script (v2)
-#  双层保护: AES-256-GCM + 分片混淆
-#  源码永不落盘
+#  EncryptVault Protected Script (v3)
+#  AES-256-CBC · 自解密 · 明文永不落盘
 # ============================================================
-__EV_K='$keyB64'
-__EV_I='$ivB64'
+__EV_K='$keyHex'
+__EV_I='$ivHex'
 __EV_D='$dataB64'
 
-__ev_b64d() { printf '%s' "${'$'}1" | base64 -d; }
-
-__ev_run() {
-    local k i d rev ct plain
-    k="${'$'}(__ev_b64d "${'$'}__EV_K" | xxd -p -c 256)"
-    i="${'$'}(__ev_b64d "${'$'}__EV_I" | xxd -p -c 256)"
-    d="${'$'}(__ev_b64d "${'$'}__EV_D")"
-
-    # 解混淆 (与生成端互逆)
-    rev="${'$'}(printf '%s' "${'$'}d" | rev | base64 -d 2>/dev/null)"
-    if [ -z "${'$'}rev" ]; then
-        # 退化: 直接用 python 做反混淆
-        rev="${'$'}(python3 -c "
-import base64,sys
-d=base64.b64decode('${'$'}__EV_D')[::-1]
-k=base64.b64decode('${'$'}__EV_K')
-o=bytearray()
-for i,b in enumerate(d):
-    o.append((b ^ ((k[i%32]+(i*131))&0xFF)) & 0xFF)
-sys.stdout.buffer.write(base64.b64encode(bytes(o)))
-" 2>/dev/null | base64 -d)"
-    fi
-
-    # AES-256-GCM 解密并执行
-    printf '%s' "${'$'}rev" | openssl enc -d -aes-256-gcm \
-        -K "${'$'}k" -iv "${'$'}i" 2>/dev/null | bash
-    unset k i d rev
+__ev_main() {
+    local tmp
+    tmp="${'$'}(mktemp /tmp/.ev.XXXXXX 2>/dev/null || mktemp)"
+    printf '%s' "${'$'}__EV_D" | base64 -d > "${'$'}tmp.enc" 2>/dev/null || {
+        echo "[EncryptVault] base64 解码失败" >&2; return 1; }
+    openssl enc -d -aes-256-cbc -K "${'$'}__EV_K" -iv "${'$'}__EV_I" \
+        -in "${'$'}tmp.enc" -out "${'$'}tmp.sh" 2>/dev/null || {
+        rm -f "${'$'}tmp.enc" "${'$'}tmp.sh"
+        echo "[EncryptVault] openssl 解密失败" >&2; return 1; }
+    chmod 700 "${'$'}tmp.sh"
+    bash "${'$'}tmp.sh"
+    local ret=${'$'}?
+    rm -f "${'$'}tmp.enc" "${'$'}tmp.sh"
+    return ${'$'}ret
 }
-__ev_run
+__ev_main
 unset __EV_K __EV_I __EV_D
 """.trimIndent()
 
                 outFile.writeText(tmpl)
                 outFile.setExecutable(true)
 
-                // ---- 生成配套解密脚本 (仅作者持有) ----
-                val decryptPath = File(outFile.parentFile,
-                    outFile.nameWithoutExtension + "-decrypt.sh")
-                decryptPath.writeText("""
-#!/data/data/com.termux/files/usr/bin/bash
-# EncryptVault 还原脚本 — 恢复原始源码
-[ ${'$'}# -lt 1 ] && { echo "用法: ${'$'}0 <protected.sh> [out.sh]"; exit 1; }
-SRC="${'$'}1"; DST="${'$'}{2:-decrypted.sh}"
-grep '^__EV_' "${'$'}SRC" > /tmp/__ev_v.sh && source /tmp/__ev_v.sh && rm -f /tmp/__ev_v.sh
-python3 -c "
-import base64,sys
-d=base64.b64decode('${'$'}__EV_D')[::-1]
-k=base64.b64decode('${'$'}__EV_K')
-o=bytearray()
-for i,b in enumerate(d):
-    o.append((b ^ ((k[i%32]+(i*131))&0xFF)) & 0xFF)
-sys.stdout.buffer.write(base64.b64encode(bytes(o)))
-" | base64 -d | openssl enc -d -aes-256-gcm \
-    -K "${'$'}(printf '%s' "${'$'}__EV_K" | base64 -d | xxd -p -c 256)" \
-    -iv "${'$'}(printf '%s' "${'$'}__EV_I" | base64 -d | xxd -p -c 256)" > "${'$'}DST"
-echo "✅ 已还原到: ${'$'}DST"
-""".trimIndent())
-                decryptPath.setExecutable(true)
-
                 """
-✅ 保护成功
+✅ 加密成功
 📄 保护脚本: ${outFile.absolutePath}
-🔓 还原脚本: ${decryptPath.absolutePath}
-🔒 算法: AES-256-GCM × 200K 轮 (双层)
+🔒 算法: AES-256-CBC (与 openssl 兼容)
+▶️ 运行: bash ${outFile.name}
+🔓 解保护: 在 App 中输入该保护脚本路径, 点"解保护"
 """.trimIndent()
             } catch (e: Exception) {
                 "❌ 失败: ${e.message}"
+            }
+        }
+
+    // ============================================================
+    //  Shell 解保护 — 从保护脚本还原原始 .sh
+    // ============================================================
+    suspend fun unprotectShellScript(inputPath: String, outputPathRaw: String): String =
+        withContext(Dispatchers.IO) {
+            try {
+                val src = File(inputPath.trim())
+                if (!src.exists()) return@withContext "❌ 保护脚本不存在: $inputPath"
+                if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
+
+                val text = src.readText()
+                val kRe = Regex("""__EV_K\s*=\s*['"]([0-9a-fA-F]+)['"]""")
+                val iRe = Regex("""__EV_I\s*=\s*['"]([0-9a-fA-F]+)['"]""")
+                val dRe = Regex("""__EV_D\s*=\s*['"]([A-Za-z0-9+/=]+)['"]""")
+
+                val kM = kRe.find(text) ?: return@withContext "❌ 不是有效的保护脚本 (缺 __EV_K)"
+                val iM = iRe.find(text) ?: return@withContext "❌ 不是有效的保护脚本 (缺 __EV_I)"
+                val dM = dRe.find(text) ?: return@withContext "❌ 不是有效的保护脚本 (缺 __EV_D)"
+
+                val keyHex = kM.groupValues[1]
+                val ivHex  = iM.groupValues[1]
+                val dataB64 = dM.groupValues[1]
+
+                val key = keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                val iv  = ivHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                val ct  = Base64.decode(dataB64, Base64.NO_WRAP)
+
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                val plain = cipher.doFinal(ct)
+
+                val raw = outputPathRaw.trim().ifBlank { src.parent ?: "/sdcard" }
+                val outName = src.name.removeSuffix("-protected.sh").let {
+                    if (it.endsWith(".sh")) it else "$it-restored.sh"
+                }
+                val outFile = run {
+                    val f = File(raw)
+                    if (f.isDirectory || raw.endsWith("/")) File(f, outName) else f
+                }
+                outFile.parentFile?.mkdirs()
+                outFile.writeBytes(plain)
+                outFile.setExecutable(true)
+
+                """
+✅ 已还原
+📄 原始脚本: ${outFile.absolutePath}
+📦 大小: ${plain.size} 字节
+▶️ 运行: bash ${outFile.name}
+""".trimIndent()
+            } catch (e: Exception) {
+                "❌ 解保护失败: ${e.message}"
             }
         }
 
