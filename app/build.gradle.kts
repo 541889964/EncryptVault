@@ -4,6 +4,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 android {
+    signingConfigs {
+        create("xuanyi") {
+            storeFile = file("../keystore/xuanyi.jks")
+            storePassword = "xuanyi2026"
+            keyAlias = "xuanyi"
+            keyPassword = "xuanyi2026"
+        }
+    }
     namespace = "com.encryptvault.app"
     compileSdk = 35
     defaultConfig {
@@ -19,7 +27,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildTypes { release { isMinifyEnabled = false } }
+    buildTypes { release { signingConfig = signingConfigs.getByName("xuanyi")
+            isMinifyEnabled = false } }
 }
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))

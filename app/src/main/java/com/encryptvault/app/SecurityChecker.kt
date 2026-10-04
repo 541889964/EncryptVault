@@ -141,21 +141,6 @@ object SecurityChecker {
 
     // 反编译重打包检测
     private fun isRepackaged(): Boolean {
-        // 检测常见逆向工具残留
-        for (p in listOf(
-            "/data/local/tmp/apktool.jar", "/data/local/tmp/apktool",
-            "/data/local/tmp/uber-apk-signer.jar",
-            "/data/local/tmp/dex2jar", "/sdcard/apktool",
-            "/sdcard/MT2", "/sdcard/MT管理器", "/sdcard/NP管理器",
-            "/sdcard/Android/data/bin.mt.plus")) {
-            if (File(p).exists()) return true
-        }
-        // 检测 dex 是否被明显篡改 (dex 头部 magic)
-        try {
-            val apkPath = System.getProperty("java.class.path") ?: ""
-            // 简化: 检查 dex md5 前缀, 若与预期不符则视为重打包
-            // 这里只做基础检测, 不做具体签名比较
-        } catch (_: Exception) {}
         return false
     }
 }

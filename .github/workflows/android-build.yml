@@ -3,6 +3,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,10 +16,19 @@ jobs:
       - uses: android-actions/setup-android@v4
         with: { packages: 'platform-tools' }
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
-      - uses: actions/upload-artifact@v4
+      - name: Decode keystore
+        run: |
+          mkdir -p keystore
+          base64 -d keystore/xuanyi.b64 > keystore/xuanyi.jks
+          ls -la keystore/
+      - name: Build Release APK (signed xuanyi)
+        run: gradle assembleRelease --no-daemon --stacktrace
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
         with:
-          name: EncryptVault-debug
-          path: app/build/outputs/apk/debug/*.apk
-          retention-days: 30
+          tag_name: latest
+          name: Latest Build
+          files: app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
