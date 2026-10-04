@@ -3,7 +3,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
-
 android {
     namespace = "com.encryptvault.app"
     compileSdk = 35
@@ -11,8 +10,8 @@ android {
         applicationId = "com.encryptvault.app"
         minSdk = 21
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
     }
     buildFeatures { compose = true }
     compileOptions {
@@ -21,12 +20,9 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildTypes {
-        release {
-            isMinifyEnabled = false
-        }
+        release { isMinifyEnabled = false }
     }
 }
-
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
