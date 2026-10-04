@@ -1,6 +1,5 @@
 package com.encryptvault.app
 
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -18,20 +17,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.*
 import com.encryptvault.app.crypto.CryptoManager
 import com.encryptvault.app.crypto.FileItem
 import com.encryptvault.app.crypto.ProcessStatus
 import kotlinx.coroutines.*
 
-// ---- 液态玻璃卡片 (基于 AppleLiquidGlassForAndroid) ----
+// ---- 液态玻璃卡片 (内联实现, 不依赖第三方库) ----
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 20.dp,
-    blurRadius: Float = 15f,
     content: @Composable BoxScope.() -> Unit
 ) {
     Box(
@@ -39,7 +40,6 @@ fun GlassCard(
             .clip(RoundedCornerShape(cornerRadius))
             .background(Color.White.copy(alpha = 0.06f))
             .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(cornerRadius))
-            .blur(blurRadius.dp, BlurredEdgeTreatment(RoundedCornerShape(cornerRadius)))
             .background(Color(0x15111111))
             .padding(16.dp),
         content = content
@@ -69,7 +69,6 @@ fun LiquidBackground(content: @Composable () -> Unit) {
                 )
             )
     ) {
-        // 浮动光斑
         val bubble = rememberInfiniteTransition(label = "b")
         val offsetX by bubble.animateFloat(
             0f, 60f, infiniteRepeatable(tween(6000), RepeatMode.Reverse), label = "x"
@@ -92,7 +91,6 @@ fun LiquidBackground(content: @Composable () -> Unit) {
     }
 }
 
-// ---- 主页 ----
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EncryptApp() {
@@ -107,7 +105,6 @@ fun EncryptApp() {
     var showPassword by remember { mutableStateOf(false) }
     var selectedTab by remember { mutableIntStateOf(0) }
 
-    // 文件选择器
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -116,7 +113,6 @@ fun EncryptApp() {
         }
     }
 
-    // 目录选择器
     val dirPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -134,20 +130,14 @@ fun EncryptApp() {
             topBar = {
                 TopAppBar(
                     title = {
-                        Text(
-                            "EncryptVault",
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
+                        Text("EncryptVault", fontWeight = FontWeight.Bold, color = Color.White)
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = Color.Transparent
                     )
                 )
             },
-            bottomBar = {
-                GlassBottomBar(selectedTab) { selectedTab = it }
-            },
+            bottomBar = { GlassBottomBar(selectedTab) { selectedTab = it } },
             floatingActionButton = {
                 if (selectedTab == 0) {
                     FloatingActionButton(
@@ -206,14 +196,13 @@ fun EncryptApp() {
                         onClear = { files = emptyList(); statusText = "" }
                     )
                     1 -> ShellProtectPage(crypto)
-                    2 -> SettingsPage(crypto)
+                    2 -> SettingsPage()
                 }
             }
         }
     }
 }
 
-// ---- 加密页 ----
 @Composable
 fun EncryptPage(
     files: List<FileItem>, isProcessing: Boolean, statusText: String,
@@ -222,7 +211,6 @@ fun EncryptPage(
     onPasswordChange: (String) -> Unit, onToggleShow: () -> Unit,
     onEncrypt: () -> Unit, onDecrypt: () -> Unit, onClear: () -> Unit
 ) {
-    // 密码输入
     GlassCard(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Column {
             Text("加密密码", color = Color.White.copy(0.7f), fontSize = 13.sp)
@@ -232,9 +220,8 @@ fun EncryptPage(
                 onValueChange = onPasswordChange,
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("输入密码", color = Color.White.copy(0.3f)) },
-                visualTransformation = if (showPassword)
-                    androidx.compose.ui.text.input.VisualTransformation.None
-                else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                visualTransformation = if (showPassword) VisualTransformation.None
+                    else PasswordVisualTransformation(),
                 trailingIcon = {
                     IconButton(onClick = onToggleShow) {
                         Icon(
@@ -257,7 +244,6 @@ fun EncryptPage(
         }
     }
 
-    // 添加文件按钮组
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         GlassActionButton("添加文件", Icons.Outlined.InsertDriveFile,
@@ -266,19 +252,17 @@ fun EncryptPage(
             Modifier.weight(1f), onAddDir)
     }
 
-    // 状态
     AnimatedVisibility(visible = statusText.isNotEmpty()) {
         Text(
             statusText,
             color = if (statusText.startsWith("完成")) Color(0xFF4CAF50)
-                    else if (statusText.contains("失败")) Color(0xFFFF5252)
-                    else Color(0xFF6C63FF),
+                else if (statusText.contains("失败")) Color(0xFFFF5252)
+                else Color(0xFF6C63FF),
             fontSize = 13.sp,
             modifier = Modifier.padding(vertical = 4.dp)
         )
     }
 
-    // 文件列表
     LazyColumn(
         Modifier.weight(1f),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -289,7 +273,6 @@ fun EncryptPage(
         }
     }
 
-    // 操作按钮
     Row(Modifier.fillMaxWidth().padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Button(
@@ -324,7 +307,6 @@ fun EncryptPage(
     }
 }
 
-// ---- .sh 保护页 ----
 @Composable
 fun ShellProtectPage(crypto: CryptoManager) {
     var inputPath by remember { mutableStateOf("") }
@@ -416,9 +398,8 @@ fun ShellProtectPage(crypto: CryptoManager) {
     }
 }
 
-// ---- 设置页 ----
 @Composable
-fun SettingsPage(crypto: CryptoManager) {
+fun SettingsPage() {
     LazyColumn(
         Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -432,9 +413,7 @@ fun SettingsPage(crypto: CryptoManager) {
                     Spacer(Modifier.height(12.dp))
                     Text("算法: AES-256-GCM", color = Color.White.copy(0.7f),
                         fontSize = 14.sp)
-                    Text("密钥来源: Android Keystore (硬件级)",
-                        color = Color.White.copy(0.7f), fontSize = 14.sp)
-                    Text("密钥派生: PBKDF2-HMAC-SHA256",
+                    Text("密钥派生: PBKDF2-HMAC-SHA256 (10000轮)",
                         color = Color.White.copy(0.7f), fontSize = 14.sp)
                     Spacer(Modifier.height(8.dp))
                     Text("最低支持: Android 5.0 (API 21)",
@@ -458,10 +437,9 @@ fun SettingsPage(crypto: CryptoManager) {
     }
 }
 
-// ---- 组件 ----
 @Composable
 fun GlassActionButton(
-    text: String, icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String, icon: ImageVector,
     modifier: Modifier = Modifier, onClick: () -> Unit
 ) {
     Box(
@@ -483,7 +461,7 @@ fun GlassActionButton(
 
 @Composable
 fun GlassFileItem(file: FileItem) {
-    GlassCard(Modifier.fillMaxWidth(), cornerRadius = 14.dp, blurRadius = 8f) {
+    GlassCard(Modifier.fillMaxWidth(), cornerRadius = 14.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val icon = when {
                 file.name.endsWith(".sh") -> Icons.Outlined.Terminal
@@ -516,7 +494,7 @@ fun GlassFileItem(file: FileItem) {
 fun GlassBottomBar(selected: Int, onSelect: (Int) -> Unit) {
     GlassCard(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        cornerRadius = 24.dp, blurRadius = 20f
+        cornerRadius = 24.dp
     ) {
         Row(
             Modifier.fillMaxWidth(),
@@ -538,14 +516,14 @@ fun GlassBottomBar(selected: Int, onSelect: (Int) -> Unit) {
                     Icon(
                         if (selected == i) fillIcon else outIcon, null,
                         tint = if (selected == i) Color(0xFF6C63FF)
-                               else Color.White.copy(0.4f),
+                            else Color.White.copy(0.4f),
                         modifier = Modifier.size(22.dp)
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
                         label,
                         color = if (selected == i) Color(0xFF6C63FF)
-                               else Color.White.copy(0.4f),
+                            else Color.White.copy(0.4f),
                         fontSize = 11.sp
                     )
                 }

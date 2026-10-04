@@ -24,7 +24,6 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 
 class CryptoManager(private val ctx: Context) {
 
-    // ---- 文件信息 ----
     fun getFileInfo(uri: Uri): FileItem? {
         return try {
             ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
@@ -49,7 +48,6 @@ class CryptoManager(private val ctx: Context) {
         return list
     }
 
-    // ---- 读取字节 ----
     private fun readBytes(uri: Uri): ByteArray =
         ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
 
@@ -57,14 +55,12 @@ class CryptoManager(private val ctx: Context) {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(data) }
     }
 
-    // ---- 加密文件 ----
     suspend fun encryptFile(uri: Uri, password: String): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 val plain = readBytes(uri)
                 val cipher = buildCipher(password, Cipher.ENCRYPT_MODE, null)
                 val encrypted = cipher.doFinal(plain)
-                // 格式: [16字节 IV][密文]
                 val output = ByteArray(16 + encrypted.size)
                 System.arraycopy(cipher.iv, 0, output, 0, 16)
                 System.arraycopy(encrypted, 0, output, 16, encrypted.size)
@@ -75,7 +71,6 @@ class CryptoManager(private val ctx: Context) {
             }
         }
 
-    // ---- 解密文件 ----
     suspend fun decryptFile(uri: Uri, password: String): Boolean =
         withContext(Dispatchers.IO) {
             try {
@@ -92,10 +87,7 @@ class CryptoManager(private val ctx: Context) {
             }
         }
 
-    // ---- 构建 Cipher (AES-256-GCM + PBKDF2) ----
-    private fun buildCipher(
-        password: String, mode: Int, iv: ByteArray?
-    ): Cipher {
+    private fun buildCipher(password: String, mode: Int, iv: ByteArray?): Cipher {
         val salt = "EncryptVault-Salt-2026".toByteArray(Charsets.UTF_8)
         val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
         val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, 10000, 256)
@@ -112,7 +104,6 @@ class CryptoManager(private val ctx: Context) {
         return cipher
     }
 
-    // ---- Shell 脚本源码保护 ----
     suspend fun protectShellScript(
         inputPath: String, outputPath: String
     ): String = withContext(Dispatchers.IO) {
@@ -121,12 +112,10 @@ class CryptoManager(private val ctx: Context) {
             if (!src.exists()) return@withContext "❌ 源文件不存在: $inputPath"
 
             val script = src.readText()
-            // 1. 生成随机密钥
             val keyBytes = ByteArray(32)
             SecureRandom().nextBytes(keyBytes)
             val keyB64 = Base64.encodeToString(keyBytes, Base64.NO_WRAP)
 
-            // 2. AES-256-GCM 加密源码
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             val keySpec = SecretKeySpec(keyBytes, "AES")
             val nonce = ByteArray(12)
@@ -136,7 +125,6 @@ class CryptoManager(private val ctx: Context) {
             val payloadB64 = Base64.encodeToString(ciphertext, Base64.NO_WRAP)
             val nonceB64 = Base64.encodeToString(nonce, Base64.NO_WRAP)
 
-            // 3. 生成自解密执行脚本
             val protectedScript = """
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================
@@ -152,19 +140,16 @@ __ev_decode() {
 }
 
 __ev_run() {
-    local key iv data tmp
+    local key iv data
     key="${'$'}(__ev_decode "${'$'}__EV_KEY")"
     iv="${'$'}(__ev_decode "${'$'}__EV_IV")"
     data="${'$'}(__ev_decode "${'$'}__EV_DATA")"
 
     if command -v openssl >/dev/null 2>&1; then
-        tmp="${'$'}(mktemp)"
-        chmod 600 "${'$'}tmp"
         printf '%s' "${'$'}data" | openssl enc -d -aes-256-gcm \
             -K "${'$'}(printf '%s' "${'$'}key" | xxd -p -c 256)" \
             -iv "${'$'}(printf '%s' "${'$'}iv" | xxd -p -c 256)" 2>/dev/null \
             | bash
-        rm -f "${'$'}tmp"
     else
         echo "[EncryptVault] 需要 openssl 支持" >&2
         exit 1
@@ -178,7 +163,6 @@ unset __EV_KEY __EV_IV __EV_DATA
             File(outputPath).writeText(protectedScript)
             File(outputPath).setExecutable(true)
 
-            // 4. 生成配对的解密脚本
             val decryptScript = """
 #!/data/data/com.termux/files/usr/bin/bash
 # EncryptVault 解密脚本 — 输入保护脚本路径，输出原始源码
