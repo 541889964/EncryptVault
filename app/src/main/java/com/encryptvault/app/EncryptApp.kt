@@ -31,104 +31,67 @@ import com.encryptvault.app.crypto.FileItem
 import com.encryptvault.app.crypto.ProcessStatus
 import kotlinx.coroutines.*
 
-// ============================================================
-//  静态毛玻璃背景 (性能优化: 无重组, 只用 graphicsLayer)
-// ============================================================
 @Composable
 fun LiquidBackground(content: @Composable () -> Unit) {
-    val staticBrush = remember {
-        Brush.linearGradient(
-            listOf(Color(0xFF0A0E27), Color(0xFF1B1F3B), Color(0xFF0F1436), Color(0xFF0A0E27))
-        )
-    }
-    val glow = remember { Brush.radialGradient(
-        listOf(Color(0xFF6C63FF).copy(alpha = 0.32f), Color.Transparent)) }
-    val glow2 = remember { Brush.radialGradient(
-        listOf(Color(0xFFFF6584).copy(alpha = 0.20f), Color.Transparent)) }
+    val bg = remember { Brush.linearGradient(listOf(
+        Color(0xFF0A0E27), Color(0xFF1B1F3B), Color(0xFF0F1436), Color(0xFF0A0E27))) }
+    val glow = remember { Brush.radialGradient(listOf(
+        Color(0xFF6C63FF).copy(alpha = 0.32f), Color.Transparent)) }
+    val glow2 = remember { Brush.radialGradient(listOf(
+        Color(0xFFFF6584).copy(alpha = 0.20f), Color.Transparent)) }
     val trans = rememberInfiniteTransition(label = "bg")
-    val shift by trans.animateFloat(
-        0f, 500f, infiniteRepeatable(tween(35000, easing = LinearEasing)), label = "s")
-
-    Box(Modifier.fillMaxSize().background(staticBrush)) {
+    val shift by trans.animateFloat(0f, 500f,
+        infiniteRepeatable(tween(35000, easing = LinearEasing)), label = "s")
+    Box(Modifier.fillMaxSize().background(bg)) {
         Box(Modifier.size(320.dp).graphicsLayer {
-            translationX = shift * 1.1f
-            translationY = 60f
+            translationX = shift * 1.1f; translationY = 60f
         }.background(glow, CircleShape))
         Box(Modifier.size(260.dp).graphicsLayer {
-            translationX = 1000f - shift * 0.85f
-            translationY = 500f + shift * 0.3f
+            translationX = 1000f - shift * 0.85f; translationY = 500f + shift * 0.3f
         }.background(glow2, CircleShape))
         content()
     }
 }
 
-// ============================================================
-//  玻璃组件
-// ============================================================
 @Composable
-fun GlassCard(
-    modifier: Modifier = Modifier,
-    cornerRadius: Dp = 22.dp,
-    content: @Composable BoxScope.() -> Unit
-) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(cornerRadius))
-            .background(Color.White.copy(alpha = 0.055f))
-            .border(0.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(cornerRadius))
-            .padding(18.dp),
-        content = content
-    )
+fun GlassCard(modifier: Modifier = Modifier, cornerRadius: Dp = 22.dp,
+    content: @Composable BoxScope.() -> Unit) {
+    Box(modifier.clip(RoundedCornerShape(cornerRadius))
+        .background(Color.White.copy(alpha = 0.055f))
+        .border(0.5.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(cornerRadius))
+        .padding(18.dp), content = content)
 }
 
 @Composable
-fun GlassTextField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    label: String,
-    placeholder: String = "",
-    isPassword: Boolean = false,
-    showPassword: Boolean = false,
-    onToggleVisibility: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
-) {
+fun GlassTextField(value: String, onValueChange: (String) -> Unit, label: String,
+    placeholder: String = "", isPassword: Boolean = false,
+    showPassword: Boolean = false, onToggleVisibility: (() -> Unit)? = null,
+    modifier: Modifier = Modifier) {
     Column(modifier) {
         Text(label, color = Color.White.copy(0.55f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
+        OutlinedTextField(value = value, onValueChange = onValueChange,
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text(placeholder, color = Color.White.copy(0.28f), fontSize = 14.sp) },
             visualTransformation = if (isPassword && !showPassword)
                 PasswordVisualTransformation() else VisualTransformation.None,
-            trailingIcon = onToggleVisibility?.let { cb ->
-                {
-                    IconButton(onClick = cb) {
-                        Icon(
-                            if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            null, tint = Color.White.copy(0.5f)
-                        )
-                    }
+            trailingIcon = onToggleVisibility?.let { cb -> {
+                IconButton(onClick = cb) {
+                    Icon(if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        null, tint = Color.White.copy(0.5f))
                 }
-            },
+            } },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedTextColor = Color.White, unfocusedTextColor = Color.White,
                 focusedBorderColor = Color(0xFF6C63FF),
                 unfocusedBorderColor = Color.White.copy(0.15f),
                 cursorColor = Color(0xFF6C63FF),
                 focusedContainerColor = Color.White.copy(0.03f),
-                unfocusedContainerColor = Color.White.copy(0.03f)
-            ),
-            shape = RoundedCornerShape(14.dp),
-            singleLine = true
-        )
+                unfocusedContainerColor = Color.White.copy(0.03f)),
+            shape = RoundedCornerShape(14.dp), singleLine = true)
     }
 }
 
-// ============================================================
-//  主入口
-// ============================================================
 @Composable
 fun EncryptApp() {
     val ctx = LocalContext.current
@@ -152,29 +115,17 @@ fun EncryptApp() {
 
     LiquidBackground {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
-            // ---- 顶部大标题 (iOS Large Title) ----
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        when (selectedTab) {
-                            0 -> "文件加密"
-                            1 -> "源码保护"
-                            else -> "设置"
-                        },
-                        fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White
-                    )
-                    Text(
-                        when (selectedTab) {
-                            0 -> "Local · AES-256-GCM"
-                            1 -> "PBKDF2 · 600K Rounds"
-                            else -> "Version 4.0.0"
-                        },
-                        fontSize = 12.sp, color = Color.White.copy(0.45f),
-                        letterSpacing = 1.sp
-                    )
+                    Text(when (selectedTab) {
+                        0 -> "文件加密"; 1 -> "源码保护"; else -> "设置"
+                    }, fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(when (selectedTab) {
+                        0 -> "Local · AES-256-GCM"
+                        1 -> "PBKDF2 · 600K · MT Ready"
+                        else -> "Version 5.0.0"
+                    }, fontSize = 12.sp, color = Color.White.copy(0.45f), letterSpacing = 1.sp)
                 }
                 if (selectedTab == 0 && files.isNotEmpty()) {
                     IconButton(onClick = { files = emptyList(); statusText = "已清空" }) {
@@ -182,12 +133,9 @@ fun EncryptApp() {
                     }
                 }
             }
-
-            // ---- 主内容 ----
             Box(Modifier.weight(1f)) {
                 when (selectedTab) {
-                    0 -> HomeTab(
-                        files, isProcessing, statusText, password, showPassword,
+                    0 -> HomeTab(files, isProcessing, statusText, password, showPassword,
                         onPasswordChange = { password = it },
                         onToggleShow = { showPassword = !showPassword },
                         onAddFile = { filePicker.launch(arrayOf("*/*")) },
@@ -200,8 +148,7 @@ fun EncryptApp() {
                                     statusText = "加密中: ${f.name}"
                                     if (crypto.encryptFile(f.uri, password)) ok++
                                 }
-                                statusText = "完成: $ok/${files.size}"
-                                isProcessing = false
+                                statusText = "完成: $ok/${files.size}"; isProcessing = false
                             }
                         },
                         onDecrypt = {
@@ -216,205 +163,131 @@ fun EncryptApp() {
                                              else "完成: $ok/${files.size}"
                                 isProcessing = false
                             }
-                        }
-                    )
+                        })
                     1 -> ShellTab(crypto)
                     2 -> SettingsTab()
                 }
             }
-
-            // ---- 底部独立胶囊 Tab Bar (iOS 26) ----
             GlassTabBar(selectedTab) { selectedTab = it }
         }
     }
 }
 
-// ============================================================
-//  独立胶囊 Tab Bar
-// ============================================================
 @Composable
 fun GlassTabBar(selected: Int, onSelect: (Int) -> Unit) {
     val items = listOf(
         Triple("加密", Icons.Outlined.Lock, Icons.Filled.Lock),
         Triple("Shell", Icons.Outlined.Security, Icons.Filled.Security),
-        Triple("设置", Icons.Outlined.Settings, Icons.Filled.Settings)
-    )
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
+        Triple("设置", Icons.Outlined.Settings, Icons.Filled.Settings))
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         items.forEachIndexed { i, (label, outIcon, fillIcon) ->
             val active = selected == i
-            Box(
-                Modifier
-                    .weight(1f)
-                    .height(58.dp)
-                    .clip(RoundedCornerShape(29.dp))
-                    .background(
-                        if (active) Color(0xFF6C63FF).copy(alpha = 0.92f)
-                        else Color.White.copy(alpha = 0.07f)
-                    )
-                    .border(
-                        0.5.dp,
-                        if (active) Color(0xFF8B84FF).copy(alpha = 0.7f)
-                        else Color.White.copy(alpha = 0.12f),
-                        RoundedCornerShape(29.dp)
-                    )
-                    .clickable { onSelect(i) },
-                contentAlignment = Alignment.Center
-            ) {
+            Box(Modifier.weight(1f).height(58.dp)
+                .clip(RoundedCornerShape(29.dp))
+                .background(if (active) Color(0xFF6C63FF).copy(alpha = 0.92f)
+                            else Color.White.copy(alpha = 0.07f))
+                .border(0.5.dp,
+                    if (active) Color(0xFF8B84FF).copy(alpha = 0.7f)
+                    else Color.White.copy(alpha = 0.12f),
+                    RoundedCornerShape(29.dp))
+                .clickable { onSelect(i) }, contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        if (active) fillIcon else outIcon, null,
+                    Icon(if (active) fillIcon else outIcon, null,
                         tint = if (active) Color.White else Color.White.copy(0.55f),
-                        modifier = Modifier.size(20.dp)
-                    )
+                        modifier = Modifier.size(20.dp))
                     Spacer(Modifier.height(3.dp))
-                    Text(
-                        label,
-                        color = if (active) Color.White else Color.White.copy(0.55f),
-                        fontSize = 10.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal
-                    )
+                    Text(label, color = if (active) Color.White else Color.White.copy(0.55f),
+                        fontSize = 10.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
                 }
             }
         }
     }
 }
 
-// ============================================================
-//  Home Tab — 加密/解密
-// ============================================================
 @Composable
-fun HomeTab(
-    files: List<FileItem>, isProcessing: Boolean, statusText: String,
+fun HomeTab(files: List<FileItem>, isProcessing: Boolean, statusText: String,
     password: String, showPassword: Boolean,
     onPasswordChange: (String) -> Unit, onToggleShow: () -> Unit,
     onAddFile: () -> Unit, onAddDir: () -> Unit,
-    onEncrypt: () -> Unit, onDecrypt: () -> Unit
-) {
+    onEncrypt: () -> Unit, onDecrypt: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         GlassCard(Modifier.fillMaxWidth()) {
             Column {
-                GlassTextField(
-                    value = password, onValueChange = onPasswordChange,
-                    label = "加密密码", placeholder = "输入密码 (建议 12 位以上)",
-                    isPassword = true, showPassword = showPassword,
-                    onToggleVisibility = onToggleShow
-                )
+                GlassTextField(password, onPasswordChange, "加密密码",
+                    "输入密码 (建议 12 位以上)", isPassword = true,
+                    showPassword = showPassword, onToggleVisibility = onToggleShow)
                 if (password.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
-                    val strength = when {
+                    val s = when {
                         password.length >= 12 -> 1f to Color(0xFF4CAF50)
                         password.length >= 8  -> 0.66f to Color(0xFFFFC107)
                         else -> 0.33f to Color(0xFFFF5252)
                     }
-                    Box(
-                        Modifier.fillMaxWidth().height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(Color.White.copy(0.08f))
-                    ) {
-                        Box(
-                            Modifier.fillMaxWidth(strength.first).fillMaxHeight()
-                                .background(strength.second, RoundedCornerShape(2.dp))
-                        )
+                    Box(Modifier.fillMaxWidth().height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White.copy(0.08f))) {
+                        Box(Modifier.fillMaxWidth(s.first).fillMaxHeight()
+                            .background(s.second, RoundedCornerShape(2.dp)))
                     }
                 }
             }
         }
-
         Spacer(Modifier.height(12.dp))
-
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             AddButton("添加文件", Icons.Outlined.InsertDriveFile, Modifier.weight(1f), onAddFile)
             AddButton("添加目录", Icons.Outlined.FolderOpen, Modifier.weight(1f), onAddDir)
         }
-
         AnimatedVisibility(visible = statusText.isNotEmpty()) {
-            Text(
-                statusText,
-                color = when {
-                    statusText.startsWith("完成") || statusText.startsWith("已清空") -> Color(0xFF4CAF50)
-                    statusText.contains("失败") -> Color(0xFFFF5252)
-                    else -> Color(0xFF9C96FF)
-                },
-                fontSize = 13.sp,
-                modifier = Modifier.padding(vertical = 10.dp)
-            )
+            Text(statusText, color = when {
+                statusText.startsWith("完成") || statusText.startsWith("已清空") -> Color(0xFF4CAF50)
+                statusText.contains("失败") -> Color(0xFFFF5252)
+                else -> Color(0xFF9C96FF)
+            }, fontSize = 13.sp, modifier = Modifier.padding(vertical = 10.dp))
         }
-
         Spacer(Modifier.height(8.dp))
-
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("已选文件", color = Color.White.copy(0.5f), fontSize = 12.sp,
-                fontWeight = FontWeight.Medium)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("已选文件", color = Color.White.copy(0.5f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
             Spacer(Modifier.weight(1f))
             Text("${files.size}", color = Color.White.copy(0.5f), fontSize = 12.sp)
         }
         Spacer(Modifier.height(8.dp))
-
-        LazyColumn(
-            Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (files.isEmpty()) {
-                item {
-                    Box(
-                        Modifier.fillMaxWidth().padding(vertical = 40.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Outlined.FolderOpen, null,
-                                tint = Color.White.copy(0.15f), modifier = Modifier.size(48.dp))
-                            Spacer(Modifier.height(8.dp))
-                            Text("还没有添加文件", color = Color.White.copy(0.3f), fontSize = 13.sp)
-                        }
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (files.isEmpty()) item {
+                Box(Modifier.fillMaxWidth().padding(vertical = 40.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Outlined.FolderOpen, null, tint = Color.White.copy(0.15f),
+                            modifier = Modifier.size(48.dp))
+                        Spacer(Modifier.height(8.dp))
+                        Text("还没有添加文件", color = Color.White.copy(0.3f), fontSize = 13.sp)
                     }
                 }
             }
             items(files, key = { it.uri.toString() }) { f -> FileRow(f) }
         }
-
         Spacer(Modifier.height(12.dp))
-
-        Row(
-            Modifier.fillMaxWidth().padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Button(
-                onClick = onEncrypt,
-                enabled = !isProcessing && files.isNotEmpty(),
+        Row(Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = onEncrypt, enabled = !isProcessing && files.isNotEmpty(),
                 modifier = Modifier.weight(1f).height(54.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF6C63FF),
-                    disabledContainerColor = Color.White.copy(0.08f)
-                ),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                if (isProcessing) CircularProgressIndicator(
-                    Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                else {
-                    Icon(Icons.Filled.Lock, null, Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("加密", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                }
+                    disabledContainerColor = Color.White.copy(0.08f)),
+                shape = RoundedCornerShape(16.dp)) {
+                if (isProcessing) CircularProgressIndicator(Modifier.size(20.dp),
+                    color = Color.White, strokeWidth = 2.dp)
+                else { Icon(Icons.Filled.Lock, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
+                    Text("加密", fontWeight = FontWeight.SemiBold, fontSize = 15.sp) }
             }
-            Button(
-                onClick = onDecrypt,
-                enabled = !isProcessing && files.isNotEmpty(),
+            Button(onClick = onDecrypt, enabled = !isProcessing && files.isNotEmpty(),
                 modifier = Modifier.weight(1f).height(54.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White.copy(0.08f),
-                    contentColor = Color.White,
-                    disabledContainerColor = Color.White.copy(0.05f)
-                ),
+                    containerColor = Color.White.copy(0.08f), contentColor = Color.White,
+                    disabledContainerColor = Color.White.copy(0.05f)),
                 border = BorderStroke(0.5.dp, Color.White.copy(0.2f)),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Icon(Icons.Filled.LockOpen, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
+                shape = RoundedCornerShape(16.dp)) {
+                Icon(Icons.Filled.LockOpen, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
                 Text("解密", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
             }
         }
@@ -423,15 +296,10 @@ fun HomeTab(
 
 @Composable
 fun AddButton(text: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
-    Box(
-        modifier = modifier
-            .height(48.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(0.07f))
-            .border(0.5.dp, Color.White.copy(0.14f), RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
+    Box(modifier.height(48.dp).clip(RoundedCornerShape(14.dp))
+        .background(Color.White.copy(0.07f))
+        .border(0.5.dp, Color.White.copy(0.14f), RoundedCornerShape(14.dp))
+        .clickable(onClick = onClick), contentAlignment = Alignment.Center) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = Color.White.copy(0.8f), modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
@@ -442,27 +310,19 @@ fun AddButton(text: String, icon: ImageVector, modifier: Modifier, onClick: () -
 
 @Composable
 fun FileRow(file: FileItem) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(0.05f))
-            .border(0.5.dp, Color.White.copy(0.1f), RoundedCornerShape(14.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp)
-    ) {
+    Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+        .background(Color.White.copy(0.05f))
+        .border(0.5.dp, Color.White.copy(0.1f), RoundedCornerShape(14.dp))
+        .padding(horizontal = 14.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(36.dp).clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF6C63FF).copy(0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    when {
-                        file.name.endsWith(".sh") -> Icons.Outlined.Terminal
-                        file.name.endsWith(".txt") -> Icons.Outlined.Description
-                        else -> Icons.Outlined.InsertDriveFile
-                    }, null, tint = Color(0xFF9C96FF), modifier = Modifier.size(18.dp)
-                )
+            Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF6C63FF).copy(0.15f)),
+                contentAlignment = Alignment.Center) {
+                Icon(when {
+                    file.name.endsWith(".sh") -> Icons.Outlined.Terminal
+                    file.name.endsWith(".txt") -> Icons.Outlined.Description
+                    else -> Icons.Outlined.InsertDriveFile
+                }, null, tint = Color(0xFF9C96FF), modifier = Modifier.size(18.dp))
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -475,9 +335,6 @@ fun FileRow(file: FileItem) {
     }
 }
 
-// ============================================================
-//  Shell Tab — 密码保护
-// ============================================================
 @Composable
 fun ShellTab(crypto: CryptoManager) {
     var inputPath by remember { mutableStateOf("") }
@@ -489,20 +346,16 @@ fun ShellTab(crypto: CryptoManager) {
     var isWorking by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 20.dp),
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 12.dp)
-    ) {
+        contentPadding = PaddingValues(bottom = 12.dp)) {
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
-                                .background(Color(0xFF6C63FF).copy(0.2f)),
-                            contentAlignment = Alignment.Center
-                        ) {
+                        Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF6C63FF).copy(0.2f)),
+                            contentAlignment = Alignment.Center) {
                             Icon(Icons.Filled.Security, null, tint = Color(0xFF9C96FF),
                                 modifier = Modifier.size(22.dp))
                         }
@@ -510,181 +363,136 @@ fun ShellTab(crypto: CryptoManager) {
                         Column {
                             Text("世界顶级加密", color = Color.White,
                                 fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text("PBKDF2-SHA256 · 600,000 轮", color = Color(0xFF9C96FF),
-                                fontSize = 11.sp, letterSpacing = 0.5.sp)
+                            Text("PBKDF2-SHA256 · 600,000 轮 · MT 兼容",
+                                color = Color(0xFF9C96FF), fontSize = 11.sp, letterSpacing = 0.5.sp)
                         }
                     }
                     Spacer(Modifier.height(12.dp))
-                    Text(
-                        "密钥由密码派生，脚本内不存密钥。任何人拿到保护脚本，没有密码永远无法解开（暴力破解需数百万年）。",
-                        color = Color.White.copy(0.65f), fontSize = 12.sp, lineHeight = 18.sp
-                    )
+                    Text("密钥由密码派生，脚本内不存密钥。密码走 stdin 传入，进程列表中不可见。临时文件用 umask 077 创建，随时清理。",
+                        color = Color.White.copy(0.65f), fontSize = 12.sp, lineHeight = 18.sp)
                 }
             }
         }
-
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
-                    GlassTextField(inputPath, { inputPath = it },
-                        "源文件路径", "/storage/emulated/0/myscript.sh")
+                    GlassTextField(inputPath, { inputPath = it }, "源文件路径", "/storage/emulated/0/myscript.sh")
                     Spacer(Modifier.height(12.dp))
-                    GlassTextField(outputPath, { outputPath = it },
-                        "输出目录", "/storage/emulated/0/Download")
+                    GlassTextField(outputPath, { outputPath = it }, "输出目录", "/storage/emulated/0/Download")
                     Spacer(Modifier.height(12.dp))
-                    GlassTextField(password, { password = it },
-                        "保护密码 (至少 8 位)", "输入强密码",
+                    GlassTextField(password, { password = it }, "保护密码 (至少 8 位)", "输入强密码",
                         isPassword = true, showPassword = showPwd,
                         onToggleVisibility = { showPwd = !showPwd })
                     Spacer(Modifier.height(12.dp))
-                    GlassTextField(password2, { password2 = it },
-                        "确认密码", "再输一次",
+                    GlassTextField(password2, { password2 = it }, "确认密码", "再输一次",
                         isPassword = true, showPassword = showPwd)
                 }
             }
         }
-
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = {
-                        when {
-                            inputPath.isBlank() -> result = "❌ 请输入源文件路径"
-                            password.length < 8 -> result = "❌ 密码至少 8 位"
-                            password != password2 -> result = "❌ 两次密码不一致"
-                            else -> scope.launch {
-                                isWorking = true
-                                result = "正在加密..."
-                                result = crypto.protectShellScript(inputPath, outputPath, password)
-                                isWorking = false
-                            }
+                Button(onClick = {
+                    when {
+                        inputPath.isBlank() -> result = "❌ 请输入源文件路径"
+                        password.length < 8 -> result = "❌ 密码至少 8 位"
+                        password != password2 -> result = "❌ 两次密码不一致"
+                        else -> scope.launch {
+                            isWorking = true; result = "正在加密..."
+                            result = crypto.protectShellScript(inputPath, outputPath, password)
+                            isWorking = false
                         }
-                    },
-                    enabled = !isWorking,
-                    modifier = Modifier.weight(1f).height(54.dp),
+                    }
+                }, enabled = !isWorking, modifier = Modifier.weight(1f).height(54.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFF6C63FF),
                         disabledContainerColor = Color.White.copy(0.08f)),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    if (isWorking) CircularProgressIndicator(
-                        Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                    else {
-                        Icon(Icons.Filled.Lock, null, Modifier.size(18.dp))
+                    shape = RoundedCornerShape(16.dp)) {
+                    if (isWorking) CircularProgressIndicator(Modifier.size(20.dp),
+                        color = Color.White, strokeWidth = 2.dp)
+                    else { Icon(Icons.Filled.Lock, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("加密", fontWeight = FontWeight.SemiBold)
-                    }
+                        Text("加密", fontWeight = FontWeight.SemiBold) }
                 }
-                Button(
-                    onClick = {
-                        when {
-                            inputPath.isBlank() -> result = "❌ 请输入保护脚本路径"
-                            password.isBlank() -> result = "❌ 请输入密码"
-                            else -> scope.launch {
-                                isWorking = true
-                                result = "正在解保护..."
-                                result = crypto.unprotectShellScript(inputPath, outputPath, password)
-                                isWorking = false
-                            }
+                Button(onClick = {
+                    when {
+                        inputPath.isBlank() -> result = "❌ 请输入保护脚本路径"
+                        password.isBlank() -> result = "❌ 请输入密码"
+                        else -> scope.launch {
+                            isWorking = true; result = "正在解保护..."
+                            result = crypto.unprotectShellScript(inputPath, outputPath, password)
+                            isWorking = false
                         }
-                    },
-                    enabled = !isWorking,
-                    modifier = Modifier.weight(1f).height(54.dp),
+                    }
+                }, enabled = !isWorking, modifier = Modifier.weight(1f).height(54.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(0.08f),
-                        contentColor = Color.White,
+                        containerColor = Color.White.copy(0.08f), contentColor = Color.White,
                         disabledContainerColor = Color.White.copy(0.05f)),
                     border = BorderStroke(0.5.dp, Color.White.copy(0.2f)),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
+                    shape = RoundedCornerShape(16.dp)) {
                     Icon(Icons.Filled.LockOpen, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("解保护", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
-
-        if (result.isNotEmpty()) {
-            item {
-                GlassCard(Modifier.fillMaxWidth()) {
-                    Text(result, color = Color.White.copy(0.85f),
-                        fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
-                }
+        if (result.isNotEmpty()) item {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Text(result, color = Color.White.copy(0.85f), fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
             }
         }
     }
 }
 
-// ============================================================
-//  Settings Tab
-// ============================================================
 @Composable
 fun SettingsTab() {
-    LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 20.dp),
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(bottom = 12.dp)
-    ) {
-        item {
-            GlassCard(Modifier.fillMaxWidth()) {
-                Column {
-                    Text("加密算法", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Spacer(Modifier.height(12.dp))
-                    InfoRow("对称算法", "AES-256")
-                    InfoRow("加密模式", "GCM (AEAD)")
-                    InfoRow("密钥派生", "PBKDF2-HMAC-SHA256")
-                    InfoRow("迭代次数", "600,000 轮")
-                    InfoRow("盐值", "16 字节随机")
-                    InfoRow("初始向量", "16 字节随机")
-                    InfoRow("认证标签", "128 bit")
-                    InfoRow("Shell 保护", "PBKDF2 + AES-256-CBC")
-                }
+        contentPadding = PaddingValues(bottom = 12.dp)) {
+        item { GlassCard(Modifier.fillMaxWidth()) {
+            Column {
+                Text("加密算法", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Spacer(Modifier.height(12.dp))
+                InfoRow("对称算法", "AES-256")
+                InfoRow("加密模式", "GCM (AEAD)")
+                InfoRow("密钥派生", "PBKDF2-HMAC-SHA256")
+                InfoRow("迭代次数", "600,000 轮")
+                InfoRow("盐值", "16 字节随机")
+                InfoRow("认证标签", "128 bit")
+                InfoRow("Shell 保护", "PBKDF2 + AES-256-CBC")
+                InfoRow("密码传输", "stdin (不可见)")
             }
-        }
-
-        item {
-            GlassCard(Modifier.fillMaxWidth()) {
-                Column {
-                    Text("安全说明", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "EncryptVault 采用密码派生密钥方案保护 Shell 脚本。保护脚本内不含任何密钥信息，只有盐值和密文。运行时脚本会提示输入密码，通过 PBKDF2-HMAC-SHA256 600,000 轮派生密钥，用 AES-256-CBC 解密后立即执行。明文仅在内存中存在，从不写入磁盘。",
-                        color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "600,000 轮 PBKDF2 是 OWASP 2024 推荐值。即使攻击者拥有 GPU 集群，一个 12 位复杂密码的穷举时间也以数千年计。",
-                        color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp
-                    )
-                }
+        } }
+        item { GlassCard(Modifier.fillMaxWidth()) {
+            Column {
+                Text("安全说明", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Spacer(Modifier.height(10.dp))
+                Text("EncryptVault 采用密码派生密钥方案保护 Shell 脚本。保护脚本内不含任何密钥信息，只有盐值和密文。运行时会提示输入密码，通过 PBKDF2-HMAC-SHA256 600,000 轮派生密钥，用 AES-256-CBC 解密后立即执行。",
+                    color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
+                Spacer(Modifier.height(10.dp))
+                Text("密码通过管道 (stdin) 传给 openssl，不会出现在进程参数列表中。临时文件使用 umask 077 创建，权限始终为 0600。trap 捕获 EXIT / INT / TERM / HUP 信号，确保任何退出方式都会清理临时文件。",
+                    color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
             }
-        }
-
-        item {
-            GlassCard(Modifier.fillMaxWidth()) {
-                Column {
-                    Text("关于", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Spacer(Modifier.height(8.dp))
-                    InfoRow("应用", "EncryptVault")
-                    InfoRow("版本", "4.0.0")
-                    InfoRow("网络", "零联网")
-                    InfoRow("数据", "零收集")
-                    InfoRow("许可", "开源 · MIT")
-                }
+        } }
+        item { GlassCard(Modifier.fillMaxWidth()) {
+            Column {
+                Text("关于", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Spacer(Modifier.height(8.dp))
+                InfoRow("应用", "EncryptVault")
+                InfoRow("版本", "5.0.0")
+                InfoRow("网络", "零联网")
+                InfoRow("数据", "零收集")
+                InfoRow("兼容", "Termux / MT / Linux")
             }
-        }
+        } }
     }
 }
 
 @Composable
 fun InfoRow(k: String, v: String) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(k, color = Color.White.copy(0.5f), fontSize = 12.sp)
         Spacer(Modifier.weight(1f))
-        Text(v, color = Color.White.copy(0.9f), fontSize = 12.sp,
-            fontWeight = FontWeight.Medium)
+        Text(v, color = Color.White.copy(0.9f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
     }
 }

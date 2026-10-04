@@ -30,7 +30,7 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val VERSION: Byte = 0x04
+        private const val VERSION: Byte = 0x05
         private const val SALT_SIZE = 16
         private const val IV_SIZE = 16
         private const val CHECK_SIZE = 8
@@ -38,9 +38,10 @@ class CryptoManager(private val ctx: Context) {
         private const val KEY_BITS = 256
         private const val GCM_TAG_BITS = 128
         private const val HEADER_SIZE = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
-        // Shell 保护: openssl 兼容
         private const val OPENSSL_ITER = 600_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA256"
+        // 保护脚本模板会用到这个符号, 用占位符避免 Kotlin 插值冲突
+        private const val D = "\$"
     }
 
     fun getFileInfo(uri: Uri): FileItem? = try {
@@ -80,7 +81,6 @@ class CryptoManager(private val ctx: Context) {
         return digest.digest(key.encoded).copyOf(CHECK_SIZE)
     }
 
-    // ---- 文件加密 (AES-256-GCM) ----
     suspend fun encryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val plain = readBytes(uri)
@@ -88,11 +88,9 @@ class CryptoManager(private val ctx: Context) {
             val salt = ByteArray(SALT_SIZE).also { rnd.nextBytes(it) }
             val iv = ByteArray(IV_SIZE).also { rnd.nextBytes(it) }
             val key = deriveKey(password, salt)
-
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
             val ct = cipher.doFinal(plain)
-
             val out = ByteArray(HEADER_SIZE + ct.size)
             out[0] = VERSION
             System.arraycopy(salt, 0, out, 1, SALT_SIZE)
@@ -107,13 +105,21 @@ class CryptoManager(private val ctx: Context) {
     suspend fun decryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val data = readBytes(uri)
-            if (data.size < HEADER_SIZE + 16 || data[0] != VERSION) return@withContext false
-            val salt = data.copyOfRange(1, 1 + SALT_SIZE)
-            val iv = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE + IV_SIZE)
-            val storedCheck = data.copyOfRange(1 + SALT_SIZE + IV_SIZE, HEADER_SIZE)
-            val ct = data.copyOfRange(HEADER_SIZE, data.size)
+            if (data.size < HEADER_SIZE + 16) return@withContext false
+            // 兼容 v3/v4/v5 旧格式
+            val salt: ByteArray; val iv: ByteArray; val check: ByteArray; val ct: ByteArray
+            if (data[0] == VERSION || data[0] == 0x04.toByte() || data[0] == 0x03.toByte()) {
+                val chkSize = if (data[0] == 0x03.toByte()) 8 else 8
+                val hdr = 1 + SALT_SIZE + IV_SIZE + chkSize
+                if (data.size < hdr + 16) return@withContext false
+                salt = data.copyOfRange(1, 1 + SALT_SIZE)
+                iv = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE + IV_SIZE)
+                check = data.copyOfRange(1 + SALT_SIZE + IV_SIZE, hdr)
+                ct = data.copyOfRange(hdr, data.size)
+            } else return@withContext false
+
             val key = deriveKey(password, salt)
-            if (!storedCheck.contentEquals(keyCheck(key))) return@withContext false
+            if (!check.contentEquals(keyCheck(key))) return@withContext false
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
             writeBytes(uri, cipher.doFinal(ct))
@@ -122,10 +128,7 @@ class CryptoManager(private val ctx: Context) {
     }
 
     // ============================================================
-    //  Shell 保护 — 密码模式 (世界顶级)
-    //  PBKDF2-SHA256(600K) → 48 字节 → 32 AES key + 16 IV
-    //  格式: openssl "Salted__" 兼容
-    //  脚本内无密钥
+    //  Shell 保护 — 生成 MT + Termux 兼容脚本
     // ============================================================
     private fun deriveOpenSSLKey(password: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val factory = SecretKeyFactory.getInstance(OPENSSL_MD)
@@ -140,7 +143,7 @@ class CryptoManager(private val ctx: Context) {
         try {
             if (password.length < 8) return@withContext "❌ 密码至少 8 位"
             val src = File(inputPath.trim())
-            if (!src.exists()) return@withContext "❌ 源文件不存在: $inputPath"
+            if (!src.exists()) return@withContext "❌ 源文件不存在"
             if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
 
             val raw = outputPathRaw.trim().ifBlank { src.parent ?: "/sdcard" }
@@ -159,7 +162,7 @@ class CryptoManager(private val ctx: Context) {
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
             val ct = cipher.doFinal(plain)
 
-            // openssl 兼容格式: "Salted__" (8B) + salt (8B) + ct
+            // openssl 兼容格式: "Salted__" + 8B salt + ciphertext
             val blob = ByteArray(16 + ct.size)
             System.arraycopy("Salted__".toByteArray(Charsets.US_ASCII), 0, blob, 0, 8)
             System.arraycopy(salt, 0, blob, 8, 8)
@@ -167,45 +170,103 @@ class CryptoManager(private val ctx: Context) {
 
             val b64 = Base64.encodeToString(blob, Base64.NO_WRAP)
 
+            // 保护脚本模板 — 使用 ${'$'} 转义避免 Kotlin 插值
+            val D = "${'$'}"
             val tmpl = """
 #!/data/data/com.termux/files/usr/bin/bash
+# 也可在 MT 管理器中运行:  sh 本文件.sh
 # ============================================================
-#  EncryptVault Protected Script (v4 · Password Mode)
+#  EncryptVault Protected Script (v5 · MT Compatible)
 #  PBKDF2-HMAC-SHA256 (600,000 轮) + AES-256-CBC
-#  密钥由密码派生 · 脚本内无密钥信息
+#  密钥由密码派生 · 脚本内无任何密钥信息
 # ============================================================
-__EV_D='$b64'
 
-printf '\n🔐 输入密码: ' >&2
-read -s __EV_PWD
-echo >&2
+# ⚠️ 警告
+printf '\n⚠️  本脚本会执行解密后的 Bash 代码, 请确认来源可信\n\n' >&2
 
-__EV_TMP="${'$'}(mktemp /tmp/.ev.XXXXXX 2>/dev/null || mktemp)"
-__EV_TMP_SH="${'$'}__EV_TMP.sh"
-trap 'rm -f "${'$'}__EV_TMP" "${'$'}__EV_TMP_SH"' EXIT
+# 严格 umask — 所有新文件默认为 0600
+umask 077
 
-printf '%s' "${'$'}__EV_D" | base64 -d | \
-    openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
-        -pass pass:"${'$'}__EV_PWD" -out "${'$'}__EV_TMP_SH" 2>/dev/null
-
-if [ ${'$'}? -ne 0 ] || [ ! -s "${'$'}__EV_TMP_SH" ]; then
-    echo "❌ 密码错误或脚本损坏" >&2
+# 自动检测临时目录 (Termux / MT / Linux)
+__EV_TMPDIR=""
+for __d in "${D}{TMPDIR:-}" "/data/data/com.termux/files/usr/tmp" "/tmp" "."; do
+    if [ -n "${D}__d" ] && [ -d "${D}__d" ] && [ -w "${D}__d" ]; then
+        __EV_TMPDIR="${D}__d"; break
+    fi
+done
+if [ -z "${D}__EV_TMPDIR" ]; then
+    printf '❌ 找不到可写的临时目录\n' >&2
     exit 1
 fi
 
-chmod 700 "${'$'}__EV_TMP_SH"
-bash "${'$'}__EV_TMP_SH"
-unset __EV_PWD __EV_D
+# 检查 openssl
+if ! command -v openssl >/dev/null 2>&1; then
+    printf '❌ 需要 openssl, 请先安装\n' >&2
+    printf '   Termux: pkg install openssl\n' >&2
+    printf '   MT:     内置终端应已包含\n' >&2
+    exit 1
+fi
+
+__EV_D='$b64'
+
+printf '🔐 输入密码: ' >&2
+IFS= read -r -s __EV_PWD
+printf '\n' >&2
+
+if [ -z "${D}{__EV_PWD:-}" ]; then
+    printf '❌ 密码不能为空\n' >&2
+    exit 1
+fi
+
+# 不可预测的临时文件名
+__EV_TMP="${D}{__EV_TMPDIR}/.ev_${D}${D}_${D}(date +%s)"
+
+# 捕获所有退出信号清理临时文件
+trap 'rm -f "${D}{__EV_TMP}.enc" "${D}{__EV_TMP}.sh" 2>/dev/null' EXIT INT TERM HUP
+
+# 1. Base64 解码
+printf '%s' "${D}__EV_D" | base64 -d > "${D}{__EV_TMP}.enc" 2>/dev/null
+unset __EV_D
+if [ ! -s "${D}{__EV_TMP}.enc" ]; then
+    printf '❌ 数据损坏\n' >&2
+    exit 1
+fi
+
+# 2. 解密 — 密码走 stdin, 不出现在进程列表
+printf '%s\n' "${D}__EV_PWD" | \
+    openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
+        -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
+__EV_RC=${D}?
+unset __EV_PWD
+rm -f "${D}{__EV_TMP}.enc"
+
+if [ ${D}__EV_RC -ne 0 ] || [ ! -s "${D}{__EV_TMP}.sh" ]; then
+    printf '❌ 密码错误或文件损坏\n' >&2
+    exit 1
+fi
+
+chmod 700 "${D}{__EV_TMP}.sh" 2>/dev/null
+
+# 3. 执行
+bash "${D}{__EV_TMP}.sh"
+__EV_RC=${D}?
+
+# 4. 清理
+rm -f "${D}{__EV_TMP}.sh" 2>/dev/null
+trap - EXIT INT TERM HUP
+unset __EV_TMP __EV_TMPDIR
+exit ${D}__EV_RC
 """.trimIndent()
 
             outFile.writeText(tmpl)
             outFile.setExecutable(true)
 
             """
-✅ 加密成功 (密码模式)
+✅ 加密成功
 📄 ${outFile.absolutePath}
 🔒 PBKDF2-SHA256(600K) + AES-256-CBC
-⚠️ 密码不在脚本内, 请务必牢记
+🛡 脚本内无密钥 · 密码走 stdin · umask 077
+🔗 兼容: Termux / MT Manager / Linux
 ▶️ 运行: bash ${outFile.name}
 """.trimIndent()
         } catch (e: Exception) {
@@ -218,7 +279,7 @@ unset __EV_PWD __EV_D
     ): String = withContext(Dispatchers.IO) {
         try {
             val src = File(inputPath.trim())
-            if (!src.exists()) return@withContext "❌ 保护脚本不存在: $inputPath"
+            if (!src.exists()) return@withContext "❌ 保护脚本不存在"
             if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
 
             val text = src.readText()
