@@ -3,17 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
-
 android {
-    namespace = "com.sourceguard.tool"
-    compileSdk = 35
-    defaultConfig {
-        applicationId = "com.sourceguard.tool"
-        minSdk = 26
-        targetSdk = 35
-        versionCode = 19
-        versionName = "19.0.0"
-    }
     signingConfigs {
         create("xuanyi") {
             storeFile = file("../keystore/xuanyi.jks")
@@ -22,20 +12,24 @@ android {
             keyPassword = "xuanyi2026"
         }
     }
+    namespace = "com.encryptvault.app"
+    compileSdk = 35
+    defaultConfig {
+        applicationId = "com.encryptvault.app"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 12
+        versionName = "12.0.0"
+    }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildTypes {
-        release {
-            signingConfig = signingConfigs.getByName("xuanyi")
-            isMinifyEnabled = false
-        }
-    }
+    buildTypes { release { signingConfig = signingConfigs.getByName("xuanyi")
+            isMinifyEnabled = false } }
 }
-
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")

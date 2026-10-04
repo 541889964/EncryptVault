@@ -1,12 +1,12 @@
-package com.sourceguard.tool
+
+package com.encryptvault.app
 
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.runtime.*
-import com.sourceguard.tool.ui.theme.SourceGuardTheme
+import com.encryptvault.app.ui.theme.EncryptVaultTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -23,19 +23,14 @@ class MainActivity : ComponentActivity() {
         val warns = items.filter { !it.passed && !it.fatal }
         if (warns.isNotEmpty()) {
             Toast.makeText(this,
-                "⚠️ 环境警告: ${warns.joinToString("/") { it.name }}",
+                "⚠️ 环境警告: ${warns.joinToString(" / ") { it.name }} (不影响使用)",
                 Toast.LENGTH_SHORT).show()
         }
 
-        val notice = getString(R.string.announcement)
         enableEdgeToEdge()
         setContent {
-            SourceGuardTheme {
-                var showNotice by remember { mutableStateOf(true) }
+            EncryptVaultTheme {
                 EncryptApp(securityReport = items)
-                if (showNotice) {
-                    AnnouncementDialog(text = notice) { showNotice = false }
-                }
             }
         }
     }
