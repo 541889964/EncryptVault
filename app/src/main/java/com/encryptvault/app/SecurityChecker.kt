@@ -14,10 +14,8 @@ import java.net.Socket
 import java.security.MessageDigest
 
 data class CheckItem(
-    val name: String,
-    val passed: Boolean,
-    val detail: String,
-    val fatal: Boolean
+    val name: String, val passed: Boolean,
+    val detail: String, val fatal: Boolean
 )
 
 object SecurityChecker {
@@ -40,8 +38,7 @@ object SecurityChecker {
         checkSELinux()
     )
 
-    fun hasFatal(items: List<CheckItem>): Boolean =
-        items.any { !it.passed && it.fatal }
+    fun hasFatal(items: List<CheckItem>): Boolean = items.any { !it.passed && it.fatal }
 
     private fun getSignatures(ctx: Context): Array<Signature>? = try {
         val pm = ctx.packageManager
@@ -77,9 +74,9 @@ object SecurityChecker {
     private fun checkInstallPath(ctx: Context): CheckItem {
         val src = ctx.packageResourcePath ?: return CheckItem("路径", true, "未知", true)
         if (!src.startsWith("/data/app/"))
-            return CheckItem("路径", false, "非正规: $src", true)
+            return CheckItem("路径", false, "非正规", true)
         for (b in listOf("/tmp/", "/cache/", "/sdcard/", "/data/local/", "/mnt/"))
-            if (src.contains(b)) return CheckItem("路径", false, "可疑: $src", true)
+            if (src.contains(b)) return CheckItem("路径", false, "可疑", true)
         return CheckItem("路径", true, "/data/app/", true)
     }
 
@@ -90,8 +87,8 @@ object SecurityChecker {
             return CheckItem("Frida", false, "端口 27043", true) } catch (_: Exception) {}
         try {
             val m = File("/proc/self/maps").readText()
-            if (m.contains("frida", true)) return CheckItem("Frida", false, "maps:frida", true)
-            if (m.contains("gum-js-loop", true)) return CheckItem("Frida", false, "maps:gum", true)
+            if (m.contains("frida", true)) return CheckItem("Frida", false, "maps", true)
+            if (m.contains("gum-js-loop", true)) return CheckItem("Frida", false, "gum", true)
         } catch (_: Exception) {}
         try {
             val ps = ProcessBuilder("ps", "-A").start()
@@ -99,10 +96,10 @@ object SecurityChecker {
             val hit = lines.firstOrNull { l ->
                 l.contains("frida-server", true) || l.contains("frida-helper", true) ||
                 l.contains("linjector", true) }
-            if (hit != null) return CheckItem("Frida", false, "进程: ${hit.take(30)}", true)
+            if (hit != null) return CheckItem("Frida", false, "进程", true)
         } catch (_: Exception) {}
         for (p in listOf("/data/local/tmp/frida-server", "/data/local/tmp/re.frida.server"))
-            if (File(p).exists()) return CheckItem("Frida", false, "残留: $p", true)
+            if (File(p).exists()) return CheckItem("Frida", false, "残留", true)
         return CheckItem("Frida", true, "无", true)
     }
 
@@ -111,8 +108,7 @@ object SecurityChecker {
             "de.robv.android.xposed.XposedBridge",
             "de.robv.android.xposed.XC_MethodHook",
             "de.robv.android.xposed.XposedHelpers",
-            "de.robv.android.xposed.IXposedHookLoadPackage",
-            "de.robv.android.xposed.callbacks.XC_LoadPackage"
+            "de.robv.android.xposed.IXposedHookLoadPackage"
         )) {
             try { Class.forName(cls); return CheckItem("Xposed", false, "类: $cls", true) }
             catch (_: Throwable) {}
@@ -120,7 +116,7 @@ object SecurityChecker {
         for (p in listOf(
             "/system/lib/libxposed_art.so", "/system/lib64/libxposed_art.so",
             "/system/framework/XposedBridge.jar"
-        )) if (File(p).exists()) return CheckItem("Xposed", false, "文件: $p", true)
+        )) if (File(p).exists()) return CheckItem("Xposed", false, "文件", true)
         return CheckItem("Xposed", true, "无", true)
     }
 
@@ -131,7 +127,7 @@ object SecurityChecker {
             val s = File("/proc/self/status").readText()
             val m = Regex("TracerPid:\\s*(\\d+)").find(s)
             if (m != null && m.groupValues[1] != "0")
-                return CheckItem("调试器", false, "TracerPid=${m.groupValues[1]}", true)
+                return CheckItem("调试器", false, "TracerPid", true)
         } catch (_: Exception) {}
         return CheckItem("调试器", true, "无", true)
     }
@@ -141,12 +137,12 @@ object SecurityChecker {
         val product = Build.PRODUCT ?: ""
         val fp = Build.FINGERPRINT ?: ""
         val model = Build.MODEL ?: ""
-        if (hw.equals("goldfish", true)) return CheckItem("模拟器", false, "HW=goldfish", true)
-        if (hw.equals("ranchu", true)) return CheckItem("模拟器", false, "HW=ranchu", true)
+        if (hw.equals("goldfish", true)) return CheckItem("模拟器", false, "goldfish", true)
+        if (hw.equals("ranchu", true)) return CheckItem("模拟器", false, "ranchu", true)
         if (product.startsWith("sdk_gphone", true)) return CheckItem("模拟器", false, "PRODUCT", true)
-        if (fp.startsWith("generic/", true)) return CheckItem("模拟器", false, "FP=generic", true)
+        if (fp.startsWith("generic/", true)) return CheckItem("模拟器", false, "FP", true)
         if (model.contains("Android SDK built for", true)) return CheckItem("模拟器", false, "MODEL", true)
-        if (File("/system/bin/qemu-props").exists()) return CheckItem("模拟器", false, "qemu-props", true)
+        if (File("/system/bin/qemu-props").exists()) return CheckItem("模拟器", false, "qemu", true)
         return CheckItem("模拟器", true, "真机", true)
     }
 
@@ -172,7 +168,7 @@ object SecurityChecker {
         try {
             val line = Runtime.getRuntime().exec(arrayOf("which", "su"))
                 .inputStream.bufferedReader().readLine()
-            if (!line.isNullOrEmpty()) return CheckItem("Root", false, "which su=$line", false)
+            if (!line.isNullOrEmpty()) return CheckItem("Root", false, "which su", false)
         } catch (_: Exception) {}
         return CheckItem("Root", true, "无", false)
     }
@@ -182,13 +178,13 @@ object SecurityChecker {
             "/data/adb/magisk","/data/adb/magisk.img","/data/adb/magisk.db",
             "/data/adb/modules","/sbin/.magisk","/sbin/.core/mirror",
             "/sbin/.core/img","/cache/.disable_magisk","/dev/magisk"
-        )) if (File(p).exists()) return CheckItem("Magisk", false, "文件: $p", false)
+        )) if (File(p).exists()) return CheckItem("Magisk", false, "文件", false)
         for (prop in listOf(
             "ro.magisk.version","init.svc.magisk",
             "init.svc.magisk_pfs","persist.magisk.hide"
         )) {
             val v = getProp(prop)
-            if (!v.isNullOrEmpty()) return CheckItem("Magisk", false, "$prop=$v", false)
+            if (!v.isNullOrEmpty()) return CheckItem("Magisk", false, prop, false)
         }
         return CheckItem("Magisk", true, "无", false)
     }
@@ -198,7 +194,7 @@ object SecurityChecker {
             "/data/adb/ksu","/data/adb/ksud","/data/adb/modules_kernelsu",
             "/dev/ksu","/dev/kernelsu",
             "/system/lib/modules/kernelsu.ko","/system/lib64/modules/kernelsu.ko"
-        )) if (File(p).exists()) return CheckItem("KernelSU", false, "文件: $p", false)
+        )) if (File(p).exists()) return CheckItem("KernelSU", false, "文件", false)
         try {
             if (File("/proc/modules").readText().contains("kernelsu", true))
                 return CheckItem("KernelSU", false, "/proc/modules", false)
@@ -212,7 +208,7 @@ object SecurityChecker {
                 return CheckItem("Zygisk", false, "maps", false)
         } catch (_: Exception) {}
         for (p in listOf("/data/adb/modules/zygisk","/data/adb/modules/shamiko"))
-            if (File(p).exists()) return CheckItem("Zygisk", false, "文件: $p", false)
+            if (File(p).exists()) return CheckItem("Zygisk", false, "文件", false)
         return CheckItem("Zygisk", true, "无", false)
     }
 

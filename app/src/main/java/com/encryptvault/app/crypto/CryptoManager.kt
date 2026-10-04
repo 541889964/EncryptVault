@@ -30,7 +30,7 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val MAGIC: Byte = 0x10
+        private const val MAGIC: Byte = 0x12
         private const val SALT_SZ = 32
         private const val IV_SZ = 12
         private const val TAG_BITS = 128
@@ -40,8 +40,8 @@ class CryptoManager(private val ctx: Context) {
         private const val MASTER_BITS = 512
         private const val OPENSSL_ITER = 2_000_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA512"
-        private const val HKDF_INFO_AES = "EncryptVault-v16-aes"
-        private const val HKDF_INFO_MAC = "EncryptVault-v16-mac"
+        private const val HKDF_INFO_AES = "EncryptVault-v18-aes"
+        private const val HKDF_INFO_MAC = "EncryptVault-v18-mac"
         private const val CONST_HEX =
             "a3f1c8e29b4d60715f2e8a3c9d17b5e4f028c6a9d3b7e15f824a6c0d9e3f7b12"
         private const val SLEEP_WRONG = 1500L
@@ -69,7 +69,8 @@ class CryptoManager(private val ctx: Context) {
         val prk = mac.doFinal(ikm)
         val mac2 = Mac.getInstance("HmacSHA512")
         mac2.init(SecretKeySpec(prk, "HmacSHA512"))
-        mac2.update(info.toByteArray(Charsets.US_ASCII)); mac2.update(0x01.toByte())
+        mac2.update(info.toByteArray(Charsets.US_ASCII))
+        mac2.update(0x01.toByte())
         return mac2.doFinal().copyOf(len)
     }
 
@@ -177,9 +178,6 @@ class CryptoManager(private val ctx: Context) {
         finally { ak?.let { Arrays.fill(it, 0) }; mk?.let { Arrays.fill(it, 0) } }
     }
 
-    // ============================================================
-    //  Shell 保护 v16 — 三层变换 + 反 Python + 反反编译
-    // ============================================================
     private fun deriveOpenSSLKey(pwd: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val f = SecretKeyFactory.getInstance(OPENSSL_MD)
         val spec = PBEKeySpec(pwd.toCharArray(), salt, OPENSSL_ITER, 48 * 8)
@@ -187,24 +185,28 @@ class CryptoManager(private val ctx: Context) {
         return d.copyOfRange(0, 32) to d.copyOfRange(32, 48)
     }
 
+    // 关键修复: 用 SHA-512 取前 96 hex (48 字节), 与 km(96 hex) 长度对齐
     private fun transform3(key: ByteArray, iv: ByteArray, tag: String): List<String> {
-        val km = (key + iv).hex()
+        val km = (key + iv).hex()  // 96 hex
         val dk = MessageDigest.getInstance("SHA-512")
             .digest(tag.toByteArray(Charsets.UTF_8)).hex().take(96)
+        // 层1 XOR
         val t1 = StringBuilder(96); var i = 0
         while (i < 96) {
-            t1.append("%02x".format(km.substring(i, i+2).toInt(16) xor dk.substring(i, i+2).toInt(16)))
+            t1.append("%02x".format(km.substring(i, i + 2).toInt(16) xor dk.substring(i, i + 2).toInt(16)))
             i += 2
         }
+        // 层2 4-hex 反序
         val t2 = StringBuilder(96); i = 0
-        while (i < 96) { t2.insert(0, t1.substring(i, i+4)); i += 4 }
+        while (i < 96) { t2.insert(0, t1.substring(i, i + 4)); i += 4 }
+        // 层3 XOR CONST
         val t3 = StringBuilder(96); i = 0
         while (i < 96) {
-            t3.append("%02x".format(t2.substring(i, i+2).toInt(16) xor CONST_HEX.substring(i, i+2).toInt(16)))
+            t3.append("%02x".format(t2.substring(i, i + 2).toInt(16) xor CONST_HEX.substring(i, i + 2).toInt(16)))
             i += 2
         }
         val s = t3.toString()
-        return (0 until 6).map { s.substring(it*16, (it+1)*16) }
+        return (0 until 6).map { s.substring(it * 16, (it + 1) * 16) }
     }
 
     suspend fun protectShellScript(
@@ -278,84 +280,85 @@ __EV_BIND=$bindFlag
 
             val tpl = """
 #!/data/data/com.termux/files/usr/bin/bash
-# EncryptVault v16 ($mode) - 反 Python / 反反编译
+# EncryptVault v18 ($mode) - 30 项反逆向
 umask 077
 
-# ===== 反调试 =====
 case "${D}-" in *x*) exit 1 ;; esac
 [ -n "${D}{BASH_XTRACEFD:-}" ] && exit 1
 case ":${D}{SHELLOPTS:-}:" in *:xtrace:*) exit 1 ;; esac
 [ "${D}{PS4:-+ }" != "+ " ] && exit 1
 
-# ===== TracerPid =====
 if [ -r /proc/self/status ]; then
     grep -qE '^TracerPid:\s*[1-9]' /proc/self/status 2>/dev/null && exit 1
 fi
 
-# ===== LD_PRELOAD =====
 [ -n "${D}{LD_PRELOAD:-}" ] && exit 1
-
-# ===== 反 source =====
 [ -z "${D}{BASH_SOURCE[0]:-}" ] && exit 1
 __EV_SELF="${D}{BASH_SOURCE[0]}"
 [ -f "${D}__EV_SELF" ] || __EV_SELF="${D}0"
 [ -f "${D}__EV_SELF" ] || exit 1
 [ -L "${D}__EV_SELF" ] && exit 1
 
-# ===== 父进程检测 (含 Python/Perl/Ruby/Node) =====
 if [ -r "/proc/${D}PPID/cmdline" ]; then
     __EV_PP=$(tr '\0' ' ' < "/proc/${D}PPID/cmdline" 2>/dev/null)
     case "${D}__EV_PP" in
-        *sed*|*awk*|*grep*|*"cat "*|*tee*|*strace*|*ltrace*|*gdb*|*python*|*python3*|*perl*|*ruby*|*node*|*hexdump*|*xxd*|*strings*|*jadx*|*apktool*|*dex2jar*)
+        *sed*|*awk*|*grep*|*"cat "*|*tee*|*strace*|*ltrace*|*gdb*|*python*|*python3*|*pypy*|*perl*|*ruby*|*node*|*hexdump*|*xxd*|*strings*|*jadx*|*apktool*|*dex2jar*|*jd-cli*|*procyon*|*radare2*|*r2*|*ghidra*|*ida*|*objdump*|*readelf*)
             printf '❌ 父进程分析工具\n' >&2; exit 1 ;;
     esac
 fi
 
-# ===== 反 Python 环境变量 =====
 [ -n "${D}{PYTHONPATH:-}" ] && exit 1
 [ -n "${D}{PYTHONHOME:-}" ] && exit 1
 [ -n "${D}{PYTHONSTARTUP:-}" ] && exit 1
 
-# ===== 反 Python 进程扫描 (精准) =====
-if [ -r /proc/self/task ] && [ -d /proc ]; then
+if [ -d /proc ]; then
     for __p in /proc/[0-9]*/comm; do
         [ -r "${D}__p" ] || continue
         __n=$(cat "${D}__p" 2>/dev/null)
         case "${D}__n" in
-            python|python3|ipython|pypy|jupyter|spyder) 
-                printf '❌ 检测到 Python 进程\n' >&2; exit 1 ;;
+            python|python3|ipython|pypy|pypy3|jupyter|spyder|pycharm)
+                printf '❌ Python 进程\n' >&2; exit 1 ;;
+            jadx|jadx-gui|apktool|dex2jar|jd-cli|jd-gui|procyon|radare2|r2|ghidra|ida64|ida|ida32|objdump|readelf|nm|dwarfdump)
+                printf '❌ 反编译进程\n' >&2; exit 1 ;;
+            strace|ltrace|gdb|lldb|valgrind|rr)
+                printf '❌ 调试追踪进程\n' >&2; exit 1 ;;
         esac
     done
 fi
 
-# ===== 反反编译工具残留 =====
 for __f in \
     /data/local/tmp/jadx /data/local/tmp/jadx-gui \
     /data/local/tmp/apktool* /data/local/tmp/dex2jar* \
     /data/local/tmp/jd-cli* /data/local/tmp/jd-gui* \
+    /data/local/tmp/ghidra* /data/local/tmp/ida* \
+    /data/local/tmp/radare2* /data/local/tmp/r2* \
     /sdcard/jadx /sdcard/apktool /sdcard/dex2jar \
+    /sdcard/ghidra /sdcard/ida \
     /sdcard/MT2 /sdcard/NP管理器 /sdcard/Android/data/bin.mt.plus; do
     [ -e "${D}__f" ] && { printf '❌ 反编译工具残留\n' >&2; exit 1; }
 done
 
-# ===== 反常见反编译进程 =====
-for __p in /proc/[0-9]*/comm; do
-    [ -r "${D}__p" ] || continue
-    __n=$(cat "${D}__p" 2>/dev/null)
-    case "${D}__n" in
-        jadx|jadx-gui|apktool|dex2jar|jd-cli|jd-gui|procyon)
-            printf '❌ 检测到反编译进程\n' >&2; exit 1 ;;
-    esac
+for __h in \
+    /data/adb/lspd /data/adb/lsposed /data/adb/edxposed \
+    /data/adb/riru /data/adb/riru-modules \
+    /data/misc/riru /data/misc/lspd \
+    /system/framework/edxposed.jar /system/framework/lsposed.jar; do
+    [ -e "${D}__h" ] && { printf '❌ Hook 框架残留\n' >&2; exit 1; }
 done
 
-# ===== 命令覆盖检测 =====
-for __c in openssl sha256sum base64 date hostname getprop cut tail head; do
+for __d in \
+    /system/bin/debuggerd /system/bin/debuggerd64 \
+    /data/local/tmp/dump* /data/local/tmp/memdump* \
+    /data/local/tmp/gcore* /data/local/tmp/gdbserver*; do
+    [ -e "${D}__d" ] && { printf '❌ 内存 dump 工具\n' >&2; exit 1; }
+done
+
+for __c in openssl sha256sum sha512sum base64 date hostname getprop cut tail head; do
     declare -F "${D}__c" >/dev/null 2>&1 && {
         printf '❌ 命令被覆盖: ${D}__c\n' >&2; exit 1
     }
 done
 
-# ===== 自校验 SHA256 =====
 __EV_LAST=$(tail -n 1 "${D}__EV_SELF")
 case "${D}__EV_LAST" in
     \#HASH:*) __EV_EXP="${D}{__EV_LAST#\#HASH:}" ;;
@@ -367,7 +370,7 @@ if [ "${D}__EV_EXP" != "${D}__EV_ACT" ]; then
     if command -v shred >/dev/null 2>&1; then shred -u -n 2 -z "${D}__EV_SELF" 2>/dev/null; else rm -f "${D}__EV_SELF"; fi
     exit 1
 fi
-unset __EV_LAST __EV_EXP __EV_ACT __EV_PP __n __f __c
+unset __EV_LAST __EV_EXP __EV_ACT __EV_PP __n __f __c __h __d
 
 command -v openssl >/dev/null 2>&1 || exit 1
 command -v sha256sum >/dev/null 2>&1 || exit 1
@@ -400,11 +403,18 @@ if [ "${D}__EV_MODE" = "password" ]; then
     [ "${D}__EV_MAX_TRIES" -le 0 ] && __EV_MAX_TRIES=1
     __EV_OK=0; __EV_TRIES=0
     while [ ${D}__EV_TRIES -lt ${D}__EV_MAX_TRIES ]; do
-        printf '🔐 密码: ' >&2
-        IFS= read -r -s __EV_PWD
-        printf '\n' >&2
-        [ -z "${D}__EV_PWD" ] && { __EV_TRIES=$((__EV_TRIES+1)); continue; }
-        printf '⏳ 派生密钥...\n' >&2
+        printf '\n🔐 请输入密码: ' >&2
+        # MT 管理器兼容: stty 不可用或非交互时明文读
+        if command -v stty >/dev/null 2>&1 && [ -t 0 ]; then
+            stty -echo 2>/dev/null
+            IFS= read -r __EV_PWD
+            stty echo 2>/dev/null
+            printf '\n' >&2
+        else
+            IFS= read -r __EV_PWD
+        fi
+        [ -z "${D}__EV_PWD" ] && { __EV_TRIES=$((__EV_TRIES+1)); printf '❌ 密码为空\n' >&2; continue; }
+        printf '⏳ 派生密钥 (约 3 秒)...\n' >&2
         printf '%s\n' "${D}__EV_PWD" | openssl enc -d -aes-256-cbc \
             -pbkdf2 -iter 2000000 -md sha512 -pass stdin \
             -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
@@ -504,7 +514,7 @@ exit ${D}__EV_RC
                 .digest(outFile.readBytes()).hex()
             outFile.appendText("#HASH:$selfHash\n")
 
-            "✅ 加密成功 (v16 · 反 Python + 反反编译)\n📄 ${outFile.absolutePath}"
+            "✅ 加密成功 (v18 · 30项反逆向)\n📄 ${outFile.absolutePath}"
         } catch (e: Exception) { "❌ 失败: ${e.message}" }
     }
 

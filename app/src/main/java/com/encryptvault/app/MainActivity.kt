@@ -15,9 +15,7 @@ class MainActivity : ComponentActivity() {
         val items = SecurityChecker.check(this)
         val fatal = items.firstOrNull { !it.passed && it.fatal }
         if (fatal != null) {
-            Toast.makeText(this,
-                "❌ ${fatal.name}: ${fatal.detail}",
-                Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "❌ ${fatal.name}: ${fatal.detail}", Toast.LENGTH_LONG).show()
             finishAndRemoveTask()
             return
         }
