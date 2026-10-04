@@ -8,6 +8,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.*
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -22,6 +23,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,7 +68,7 @@ fun GlassCard(modifier: Modifier = Modifier, cornerRadius: Dp = 22.dp,
 fun GlassTextField(value: String, onValueChange: (String) -> Unit, label: String,
     placeholder: String = "", isPassword: Boolean = false,
     showPassword: Boolean = false, onToggleVisibility: (() -> Unit)? = null,
-    modifier: Modifier = Modifier) {
+    isNumber: Boolean = false, modifier: Modifier = Modifier) {
     Column(modifier) {
         Text(label, color = Color.White.copy(0.55f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
@@ -75,6 +77,8 @@ fun GlassTextField(value: String, onValueChange: (String) -> Unit, label: String
             placeholder = { Text(placeholder, color = Color.White.copy(0.28f), fontSize = 14.sp) },
             visualTransformation = if (isPassword && !showPassword)
                 PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = if (isNumber) KeyboardOptions(keyboardType = KeyboardType.Number)
+                              else KeyboardOptions.Default,
             trailingIcon = onToggleVisibility?.let { cb -> {
                 IconButton(onClick = cb) {
                     Icon(if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
@@ -124,7 +128,7 @@ fun EncryptApp() {
                     Text(when (selectedTab) {
                         0 -> "Local · AES-256-GCM"
                         1 -> "PBKDF2 · 600K · MT Ready"
-                        else -> "Version 5.0.0"
+                        else -> "Version 5.1.0"
                     }, fontSize = 12.sp, color = Color.White.copy(0.45f), letterSpacing = 1.sp)
                 }
                 if (selectedTab == 0 && files.isNotEmpty()) {
@@ -335,6 +339,9 @@ fun FileRow(file: FileItem) {
     }
 }
 
+// ============================================================
+//  Shell Tab (v5.1 新增模式选择 + 高级选项)
+// ============================================================
 @Composable
 fun ShellTab(crypto: CryptoManager) {
     var inputPath by remember { mutableStateOf("") }
@@ -342,6 +349,10 @@ fun ShellTab(crypto: CryptoManager) {
     var password by remember { mutableStateOf("") }
     var password2 by remember { mutableStateOf("") }
     var showPwd by remember { mutableStateOf(false) }
+    var passwordMode by remember { mutableStateOf(true) }
+    var maxRunsText by remember { mutableStateOf("0") }
+    var failLimitText by remember { mutableStateOf("3") }
+    var advanced by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf("") }
     var isWorking by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -349,56 +360,122 @@ fun ShellTab(crypto: CryptoManager) {
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 12.dp)) {
+
+        // ---- 模式选择 ----
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF6C63FF).copy(0.2f)),
-                            contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.Security, null, tint = Color(0xFF9C96FF),
-                                modifier = Modifier.size(22.dp))
+                    Text("保护模式", color = Color.White.copy(0.55f), fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ModeChip("🔐 密码模式", passwordMode, Modifier.weight(1f)) {
+                            passwordMode = true
                         }
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text("世界顶级加密", color = Color.White,
-                                fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                            Text("PBKDF2-SHA256 · 600,000 轮 · MT 兼容",
-                                color = Color(0xFF9C96FF), fontSize = 11.sp, letterSpacing = 0.5.sp)
+                        ModeChip("⚡ 无密码", !passwordMode, Modifier.weight(1f)) {
+                            passwordMode = false
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
-                    Text("密钥由密码派生，脚本内不存密钥。密码走 stdin 传入，进程列表中不可见。临时文件用 umask 077 创建，随时清理。",
-                        color = Color.White.copy(0.65f), fontSize = 12.sp, lineHeight = 18.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        if (passwordMode)
+                            "运行时需输入密码，PBKDF2 600K 轮派生密钥。脚本内零密钥，世界顶级安全。"
+                        else
+                            "运行时直接执行，无需输密码。密钥混淆内嵌脚本 —— 防小白不防高手，适合外挂分发。",
+                        color = Color.White.copy(0.6f), fontSize = 11.sp, lineHeight = 16.sp
+                    )
                 }
             }
         }
+
+        // ---- 路径 ----
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
-                    GlassTextField(inputPath, { inputPath = it }, "源文件路径", "/storage/emulated/0/myscript.sh")
+                    GlassTextField(inputPath, { inputPath = it }, "源文件路径",
+                        "/storage/emulated/0/myscript.sh")
                     Spacer(Modifier.height(12.dp))
-                    GlassTextField(outputPath, { outputPath = it }, "输出目录", "/storage/emulated/0/Download")
-                    Spacer(Modifier.height(12.dp))
-                    GlassTextField(password, { password = it }, "保护密码 (至少 8 位)", "输入强密码",
-                        isPassword = true, showPassword = showPwd,
-                        onToggleVisibility = { showPwd = !showPwd })
-                    Spacer(Modifier.height(12.dp))
-                    GlassTextField(password2, { password2 = it }, "确认密码", "再输一次",
-                        isPassword = true, showPassword = showPwd)
+                    GlassTextField(outputPath, { outputPath = it }, "输出目录",
+                        "/storage/emulated/0/Download")
                 }
             }
         }
+
+        // ---- 密码 (仅密码模式) ----
+        if (passwordMode) {
+            item {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Column {
+                        GlassTextField(password, { password = it },
+                            "保护密码 (至少 8 位)", "输入强密码",
+                            isPassword = true, showPassword = showPwd,
+                            onToggleVisibility = { showPwd = !showPwd })
+                        Spacer(Modifier.height(12.dp))
+                        GlassTextField(password2, { password2 = it },
+                            "确认密码", "再输一次",
+                            isPassword = true, showPassword = showPwd)
+                    }
+                }
+            }
+        }
+
+        // ---- 高级选项 ----
+        item {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { advanced = !advanced },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            null, tint = Color.White.copy(0.6f), modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("高级安全选项", color = Color.White.copy(0.85f),
+                            fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            "次数: ${maxRunsText.ifBlank{"0"}} | 自毁: ${failLimitText.ifBlank{"0"}}",
+                            color = Color.White.copy(0.4f), fontSize = 11.sp)
+                    }
+                    AnimatedVisibility(visible = advanced) {
+                        Column {
+                            Spacer(Modifier.height(14.dp))
+                            GlassTextField(maxRunsText, { maxRunsText = it.filter { c -> c.isDigit() } },
+                                "最大执行次数 (0 = 无限)", "0", isNumber = true)
+                            Spacer(Modifier.height(4.dp))
+                            Text("超过次数后脚本自动 rm -f $0 自毁",
+                                color = Color.White.copy(0.4f), fontSize = 11.sp)
+                            Spacer(Modifier.height(12.dp))
+                            if (passwordMode) {
+                                GlassTextField(failLimitText,
+                                    { failLimitText = it.filter { c -> c.isDigit() } },
+                                    "密码错误自毁阈值 (0 = 关闭)", "3", isNumber = true)
+                                Spacer(Modifier.height(4.dp))
+                                Text("连续输错密码 N 次后脚本自动自毁",
+                                    color = Color.White.copy(0.4f), fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- 操作按钮 ----
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = {
+                    val maxRuns = maxRunsText.toIntOrNull() ?: 0
+                    val failLimit = failLimitText.toIntOrNull() ?: 0
                     when {
                         inputPath.isBlank() -> result = "❌ 请输入源文件路径"
-                        password.length < 8 -> result = "❌ 密码至少 8 位"
-                        password != password2 -> result = "❌ 两次密码不一致"
+                        passwordMode && password.length < 8 -> result = "❌ 密码至少 8 位"
+                        passwordMode && password != password2 -> result = "❌ 两次密码不一致"
                         else -> scope.launch {
                             isWorking = true; result = "正在加密..."
-                            result = crypto.protectShellScript(inputPath, outputPath, password)
+                            result = crypto.protectShellScript(
+                                inputPath, outputPath, password,
+                                passwordMode, maxRuns, failLimit)
                             isWorking = false
                         }
                     }
@@ -416,7 +493,6 @@ fun ShellTab(crypto: CryptoManager) {
                 Button(onClick = {
                     when {
                         inputPath.isBlank() -> result = "❌ 请输入保护脚本路径"
-                        password.isBlank() -> result = "❌ 请输入密码"
                         else -> scope.launch {
                             isWorking = true; result = "正在解保护..."
                             result = crypto.unprotectShellScript(inputPath, outputPath, password)
@@ -435,12 +511,31 @@ fun ShellTab(crypto: CryptoManager) {
                 }
             }
         }
+
         if (result.isNotEmpty()) item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Text(result, color = Color.White.copy(0.85f), fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
             }
         }
+    }
+}
+
+@Composable
+fun ModeChip(text: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier = modifier.height(48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (active) Color(0xFF6C63FF).copy(alpha = 0.85f)
+                        else Color.White.copy(alpha = 0.06f))
+            .border(0.5.dp,
+                if (active) Color(0xFF8B84FF) else Color.White.copy(alpha = 0.12f),
+                RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, color = if (active) Color.White else Color.White.copy(0.7f),
+            fontSize = 13.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
     }
 }
 
@@ -459,7 +554,8 @@ fun SettingsTab() {
                 InfoRow("迭代次数", "600,000 轮")
                 InfoRow("盐值", "16 字节随机")
                 InfoRow("认证标签", "128 bit")
-                InfoRow("Shell 保护", "PBKDF2 + AES-256-CBC")
+                InfoRow("Shell 密码模式", "PBKDF2 + AES-256-CBC")
+                InfoRow("Shell 无密码", "AES-256-CBC + 内嵌密钥")
                 InfoRow("密码传输", "stdin (不可见)")
             }
         } }
@@ -467,10 +563,13 @@ fun SettingsTab() {
             Column {
                 Text("安全说明", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Spacer(Modifier.height(10.dp))
-                Text("EncryptVault 采用密码派生密钥方案保护 Shell 脚本。保护脚本内不含任何密钥信息，只有盐值和密文。运行时会提示输入密码，通过 PBKDF2-HMAC-SHA256 600,000 轮派生密钥，用 AES-256-CBC 解密后立即执行。",
+                Text("密码模式：密钥由密码派生，脚本内不存密钥。运行时密码走 stdin 传给 openssl，不在进程列表可见。临时文件用 umask 077 创建，权限始终 0600。trap 捕获 EXIT/INT/TERM/HUP，任何退出方式都清理临时文件。",
                     color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(10.dp))
-                Text("密码通过管道 (stdin) 传给 openssl，不会出现在进程参数列表中。临时文件使用 umask 077 创建，权限始终为 0600。trap 捕获 EXIT / INT / TERM / HUP 信号，确保任何退出方式都会清理临时文件。",
+                Text("无密码模式：密钥以 hex 反转形式内嵌脚本，运行时反混淆后直接解密。适合外挂分发，防普通用户查看源码，但防不住逆向能力强的攻击者。",
+                    color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
+                Spacer(Modifier.height(10.dp))
+                Text("自毁机制：密码错误 N 次或执行次数超限后，脚本执行 rm -f $0 删除自身，同时清理状态文件。状态文件位于 $HOME/.ev_state/，用脚本 SHA-256 前 16 位命名。",
                     color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
             }
         } }
@@ -479,7 +578,7 @@ fun SettingsTab() {
                 Text("关于", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Spacer(Modifier.height(8.dp))
                 InfoRow("应用", "EncryptVault")
-                InfoRow("版本", "5.0.0")
+                InfoRow("版本", "5.1.0")
                 InfoRow("网络", "零联网")
                 InfoRow("数据", "零收集")
                 InfoRow("兼容", "Termux / MT / Linux")

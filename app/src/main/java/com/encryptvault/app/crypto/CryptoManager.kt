@@ -40,7 +40,6 @@ class CryptoManager(private val ctx: Context) {
         private const val HEADER_SIZE = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
         private const val OPENSSL_ITER = 600_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA256"
-        // 保护脚本模板会用到这个符号, 用占位符避免 Kotlin 插值冲突
         private const val D = "\$"
     }
 
@@ -81,6 +80,13 @@ class CryptoManager(private val ctx: Context) {
         return digest.digest(key.encoded).copyOf(CHECK_SIZE)
     }
 
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+    private fun sha16(data: ByteArray): String {
+        val d = MessageDigest.getInstance("SHA-256").digest(data)
+        return d.copyOf(8).toHex()
+    }
+
     suspend fun encryptFile(uri: Uri, password: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val plain = readBytes(uri)
@@ -106,18 +112,15 @@ class CryptoManager(private val ctx: Context) {
         try {
             val data = readBytes(uri)
             if (data.size < HEADER_SIZE + 16) return@withContext false
-            // 兼容 v3/v4/v5 旧格式
-            val salt: ByteArray; val iv: ByteArray; val check: ByteArray; val ct: ByteArray
-            if (data[0] == VERSION || data[0] == 0x04.toByte() || data[0] == 0x03.toByte()) {
-                val chkSize = if (data[0] == 0x03.toByte()) 8 else 8
-                val hdr = 1 + SALT_SIZE + IV_SIZE + chkSize
-                if (data.size < hdr + 16) return@withContext false
-                salt = data.copyOfRange(1, 1 + SALT_SIZE)
-                iv = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE + IV_SIZE)
-                check = data.copyOfRange(1 + SALT_SIZE + IV_SIZE, hdr)
-                ct = data.copyOfRange(hdr, data.size)
-            } else return@withContext false
-
+            val v = data[0]
+            if (v != VERSION && v != 0x04.toByte() && v != 0x03.toByte()) return@withContext false
+            val chkSize = 8
+            val hdr = 1 + SALT_SIZE + IV_SIZE + chkSize
+            if (data.size < hdr + 16) return@withContext false
+            val salt = data.copyOfRange(1, 1 + SALT_SIZE)
+            val iv = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE + IV_SIZE)
+            val check = data.copyOfRange(1 + SALT_SIZE + IV_SIZE, hdr)
+            val ct = data.copyOfRange(hdr, data.size)
             val key = deriveKey(password, salt)
             if (!check.contentEquals(keyCheck(key))) return@withContext false
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -128,7 +131,7 @@ class CryptoManager(private val ctx: Context) {
     }
 
     // ============================================================
-    //  Shell 保护 — 生成 MT + Termux 兼容脚本
+    //  Shell 保护 — 双模式
     // ============================================================
     private fun deriveOpenSSLKey(password: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val factory = SecretKeyFactory.getInstance(OPENSSL_MD)
@@ -138,10 +141,11 @@ class CryptoManager(private val ctx: Context) {
     }
 
     suspend fun protectShellScript(
-        inputPath: String, outputPathRaw: String, password: String
+        inputPath: String, outputPathRaw: String, password: String,
+        passwordMode: Boolean, maxRuns: Int, failLimit: Int
     ): String = withContext(Dispatchers.IO) {
         try {
-            if (password.length < 8) return@withContext "❌ 密码至少 8 位"
+            if (passwordMode && password.length < 8) return@withContext "❌ 密码至少 8 位"
             val src = File(inputPath.trim())
             if (!src.exists()) return@withContext "❌ 源文件不存在"
             if (!src.isFile)   return@withContext "❌ 输入路径不是文件"
@@ -155,117 +159,206 @@ class CryptoManager(private val ctx: Context) {
             outFile.parentFile?.mkdirs()
 
             val plain = src.readBytes()
-            val salt = ByteArray(8).also { SecureRandom().nextBytes(it) }
-            val (key, iv) = deriveOpenSSLKey(password, salt)
-
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-            val ct = cipher.doFinal(plain)
-
-            // openssl 兼容格式: "Salted__" + 8B salt + ciphertext
-            val blob = ByteArray(16 + ct.size)
-            System.arraycopy("Salted__".toByteArray(Charsets.US_ASCII), 0, blob, 0, 8)
-            System.arraycopy(salt, 0, blob, 8, 8)
-            System.arraycopy(ct, 0, blob, 16, ct.size)
-
-            val b64 = Base64.encodeToString(blob, Base64.NO_WRAP)
-
-            // 保护脚本模板 — 使用 ${'$'} 转义避免 Kotlin 插值
             val D = "${'$'}"
+            val b64: String
+            val keyRevHex: String
+
+            if (passwordMode) {
+                val salt = ByteArray(8).also { SecureRandom().nextBytes(it) }
+                val (key, iv) = deriveOpenSSLKey(password, salt)
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                val ct = cipher.doFinal(plain)
+                val blob = ByteArray(16 + ct.size)
+                System.arraycopy("Salted__".toByteArray(Charsets.US_ASCII), 0, blob, 0, 8)
+                System.arraycopy(salt, 0, blob, 8, 8)
+                System.arraycopy(ct, 0, blob, 16, ct.size)
+                b64 = Base64.encodeToString(blob, Base64.NO_WRAP)
+                keyRevHex = ""
+            } else {
+                val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+                val iv = ByteArray(16).also { SecureRandom().nextBytes(it) }
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                val ct = cipher.doFinal(plain)
+                b64 = Base64.encodeToString(ct, Base64.NO_WRAP)
+                // 96 字符 hex (32B key + 16B iv), 反转混淆
+                keyRevHex = (key + iv).toHex().reversed()
+            }
+
+            val id = sha16(plain)
+            val mode = if (passwordMode) "password" else "nopass"
+
             val tmpl = """
 #!/data/data/com.termux/files/usr/bin/bash
-# 也可在 MT 管理器中运行:  sh 本文件.sh
+# 也可在 MT 管理器中运行:  bash 本文件.sh
 # ============================================================
-#  EncryptVault Protected Script (v5 · MT Compatible)
-#  PBKDF2-HMAC-SHA256 (600,000 轮) + AES-256-CBC
-#  密钥由密码派生 · 脚本内无任何密钥信息
+#  EncryptVault Protected Script (v5.1 · ${mode})
+#  ${if (passwordMode) "PBKDF2-HMAC-SHA256 (600,000 轮) + AES-256-CBC" else "AES-256-CBC + 内嵌混淆密钥"}
 # ============================================================
 
-# ⚠️ 警告
 printf '\n⚠️  本脚本会执行解密后的 Bash 代码, 请确认来源可信\n\n' >&2
 
-# 严格 umask — 所有新文件默认为 0600
 umask 077
 
-# 自动检测临时目录 (Termux / MT / Linux)
+# ---- 自动检测临时目录 ----
 __EV_TMPDIR=""
 for __d in "${D}{TMPDIR:-}" "/data/data/com.termux/files/usr/tmp" "/tmp" "."; do
     if [ -n "${D}__d" ] && [ -d "${D}__d" ] && [ -w "${D}__d" ]; then
         __EV_TMPDIR="${D}__d"; break
     fi
 done
-if [ -z "${D}__EV_TMPDIR" ]; then
-    printf '❌ 找不到可写的临时目录\n' >&2
-    exit 1
-fi
+[ -z "${D}__EV_TMPDIR" ] && { printf '❌ 无可用临时目录\n' >&2; exit 1; }
 
-# 检查 openssl
-if ! command -v openssl >/dev/null 2>&1; then
-    printf '❌ 需要 openssl, 请先安装\n' >&2
-    printf '   Termux: pkg install openssl\n' >&2
-    printf '   MT:     内置终端应已包含\n' >&2
-    exit 1
-fi
+command -v openssl >/dev/null 2>&1 || {
+    printf '❌ 需要 openssl\n' >&2; exit 1; }
 
+# ---- 参数 ----
+__EV_MODE='${mode}'
 __EV_D='$b64'
+__EV_K_REV='$keyRevHex'
+__EV_MAX=$maxRuns
+__EV_FAIL=$failLimit
+__EV_ID='$id'
 
-printf '🔐 输入密码: ' >&2
-IFS= read -r -s __EV_PWD
-printf '\n' >&2
+# 规范化数字参数
+case "${D}__EV_MAX"  in ''|*[!0-9]*) __EV_MAX=0 ;; esac
+case "${D}__EV_FAIL" in ''|*[!0-9]*) __EV_FAIL=0 ;; esac
 
-if [ -z "${D}{__EV_PWD:-}" ]; then
-    printf '❌ 密码不能为空\n' >&2
-    exit 1
+# ---- 状态文件目录 ----
+__EV_HOME="${D}{HOME:-}"
+[ -z "${D}__EV_HOME" ] && __EV_HOME="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+[ -z "${D}__EV_HOME" ] && __EV_HOME="."
+__EV_STATE_DIR="${D}{__EV_HOME}/.ev_state"
+mkdir -p "${D}__EV_STATE_DIR" 2>/dev/null
+chmod 700 "${D}__EV_STATE_DIR" 2>/dev/null
+__EV_STATE="${D}{__EV_STATE_DIR}/${D}__EV_ID"
+
+# ---- 自毁函数 ----
+__ev_self_destruct() {
+    rm -f "$0" 2>/dev/null
+    rm -f "${D}__EV_STATE" 2>/dev/null
+    printf '💥 脚本已自毁\n' >&2
+}
+
+# ---- 检查最大执行次数 ----
+if [ "${D}__EV_MAX" -gt 0 ]; then
+    __EV_RUNS=0
+    [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
+    case "${D}__EV_RUNS" in ''|*[!0-9]*) __EV_RUNS=0 ;; esac
+    if [ "${D}__EV_RUNS" -ge "${D}__EV_MAX" ]; then
+        printf '❌ 已达最大执行次数 (%s/%s)\n' "${D}__EV_RUNS" "${D}__EV_MAX" >&2
+        __ev_self_destruct
+        exit 1
+    fi
 fi
 
-# 不可预测的临时文件名
+# ---- 临时文件 ----
 __EV_TMP="${D}{__EV_TMPDIR}/.ev_${D}${D}_${D}(date +%s)"
+trap 'rm -f "${D}{__EV_TMP}.enc" "${D}{__EV_TMP}.sh" "${D}{__EV_TMP}.k" 2>/dev/null' EXIT INT TERM HUP
 
-# 捕获所有退出信号清理临时文件
-trap 'rm -f "${D}{__EV_TMP}.enc" "${D}{__EV_TMP}.sh" 2>/dev/null' EXIT INT TERM HUP
-
-# 1. Base64 解码
 printf '%s' "${D}__EV_D" | base64 -d > "${D}{__EV_TMP}.enc" 2>/dev/null
 unset __EV_D
-if [ ! -s "${D}{__EV_TMP}.enc" ]; then
-    printf '❌ 数据损坏\n' >&2
-    exit 1
+[ -s "${D}{__EV_TMP}.enc" ] || { printf '❌ 数据损坏\n' >&2; exit 1; }
+
+# ---- 分支: 密码模式 / 无密码 ----
+if [ "${D}__EV_MODE" = "password" ]; then
+    # ================ 密码模式 ================
+    __EV_MAX_TRIES=${D}__EV_FAIL
+    [ "${D}__EV_MAX_TRIES" -le 0 ] && __EV_MAX_TRIES=1
+
+    __EV_OK=0
+    __EV_TRIES=0
+    while [ ${D}__EV_TRIES -lt ${D}__EV_MAX_TRIES ]; do
+        printf '🔐 输入密码: ' >&2
+        IFS= read -r -s __EV_PWD
+        printf '\n' >&2
+
+        if [ -z "${D}__EV_PWD" ]; then
+            __EV_TRIES=${D}(( __EV_TRIES + 1 ))
+            continue
+        fi
+
+        printf '%s\n' "${D}__EV_PWD" | \
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
+                -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
+        __EV_RC=${D}?
+        unset __EV_PWD
+
+        if [ ${D}__EV_RC -eq 0 ] && [ -s "${D}{__EV_TMP}.sh" ]; then
+            __EV_OK=1; break
+        fi
+        rm -f "${D}{__EV_TMP}.sh"
+        __EV_TRIES=${D}(( __EV_TRIES + 1 ))
+        printf '❌ 密码错误 (%s/%s)\n' "${D}__EV_TRIES" "${D}__EV_MAX_TRIES" >&2
+    done
+
+    rm -f "${D}{__EV_TMP}.enc"
+
+    if [ ${D}__EV_OK -ne 1 ]; then
+        if [ "${D}__EV_FAIL" -gt 0 ]; then
+            printf '💥 密码错误次数过多, 脚本自毁\n' >&2
+            __ev_self_destruct
+        fi
+        exit 1
+    fi
+else
+    # ================ 无密码模式 ================
+    printf '%s' "${D}__EV_K_REV" | rev > "${D}{__EV_TMP}.k" 2>/dev/null
+    unset __EV_K_REV
+    [ -s "${D}{__EV_TMP}.k" ] || { printf '❌ 密钥损坏\n' >&2; exit 1; }
+
+    __EV_KEY_HEX=$(cut -c1-64  "${D}{__EV_TMP}.k")
+    __EV_IV_HEX=$(cut -c65-96 "${D}{__EV_TMP}.k")
+    rm -f "${D}{__EV_TMP}.k"
+
+    openssl enc -d -aes-256-cbc -K "${D}__EV_KEY_HEX" -iv "${D}__EV_IV_HEX" \
+        -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
+    __EV_RC=${D}?
+    rm -f "${D}{__EV_TMP}.enc"
+    unset __EV_KEY_HEX __EV_IV_HEX
+
+    if [ ${D}__EV_RC -ne 0 ] || [ ! -s "${D}{__EV_TMP}.sh" ]; then
+        printf '❌ 解密失败\n' >&2
+        exit 1
+    fi
 fi
 
-# 2. 解密 — 密码走 stdin, 不出现在进程列表
-printf '%s\n' "${D}__EV_PWD" | \
-    openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
-        -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
-__EV_RC=${D}?
-unset __EV_PWD
-rm -f "${D}{__EV_TMP}.enc"
-
-if [ ${D}__EV_RC -ne 0 ] || [ ! -s "${D}{__EV_TMP}.sh" ]; then
-    printf '❌ 密码错误或文件损坏\n' >&2
-    exit 1
+# ---- 更新执行计数 ----
+if [ "${D}__EV_MAX" -gt 0 ]; then
+    __EV_RUNS=0
+    [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
+    case "${D}__EV_RUNS" in ''|*[!0-9]*) __EV_RUNS=0 ;; esac
+    __EV_RUNS=${D}(( __EV_RUNS + 1 ))
+    printf '%s' "${D}__EV_RUNS" > "${D}__EV_STATE" 2>/dev/null
+    chmod 600 "${D}__EV_STATE" 2>/dev/null
 fi
 
+# ---- 执行 ----
 chmod 700 "${D}{__EV_TMP}.sh" 2>/dev/null
-
-# 3. 执行
 bash "${D}{__EV_TMP}.sh"
 __EV_RC=${D}?
 
-# 4. 清理
 rm -f "${D}{__EV_TMP}.sh" 2>/dev/null
 trap - EXIT INT TERM HUP
-unset __EV_TMP __EV_TMPDIR
+unset __EV_TMP __EV_TMPDIR __EV_STATE __EV_STATE_DIR __EV_HOME
 exit ${D}__EV_RC
 """.trimIndent()
 
             outFile.writeText(tmpl)
             outFile.setExecutable(true)
 
+            val modeLabel = if (passwordMode) "密码模式" else "无密码模式"
+            val maxLabel = if (maxRuns > 0) "$maxRuns 次" else "无限"
+            val failLabel = if (passwordMode) (if (failLimit > 0) "$failLimit 次自毁" else "关闭") else "—"
+
             """
-✅ 加密成功
+✅ 加密成功 ($modeLabel)
 📄 ${outFile.absolutePath}
-🔒 PBKDF2-SHA256(600K) + AES-256-CBC
-🛡 脚本内无密钥 · 密码走 stdin · umask 077
+🔒 ${if (passwordMode) "PBKDF2-SHA256(600K) + AES-256-CBC" else "AES-256-CBC + 内嵌混淆"}
+📊 执行上限: $maxLabel
+💥 密码自毁: $failLabel
+🛡 脚本内无明文密钥 · umask 077
 🔗 兼容: Termux / MT Manager / Linux
 ▶️ 运行: bash ${outFile.name}
 """.trimIndent()
@@ -285,20 +378,39 @@ exit ${D}__EV_RC
             val text = src.readText()
             val dRe = Regex("""__EV_D\s*=\s*['"]([A-Za-z0-9+/=]+)['"]""")
             val dM = dRe.find(text) ?: return@withContext "❌ 不是有效的保护脚本"
+            val modeRe = Regex("""__EV_MODE\s*=\s*['"](password|nopass)['"]""")
+            val modeM = modeRe.find(text)
+            val isPwd = modeM?.groupValues?.get(1) == "password"
 
-            val blob = Base64.decode(dM.groupValues[1], Base64.NO_WRAP)
-            if (blob.size < 17) return@withContext "❌ 数据损坏"
-            if (String(blob, 0, 8, Charsets.US_ASCII) != "Salted__")
-                return@withContext "❌ 格式错误"
+            val b64 = dM.groupValues[1]
+            val ct: ByteArray
+            val key: ByteArray
+            val iv: ByteArray
 
-            val salt = blob.copyOfRange(8, 16)
-            val ct = blob.copyOfRange(16, blob.size)
-            val (key, iv) = deriveOpenSSLKey(password, salt)
+            if (isPwd) {
+                val blob = Base64.decode(b64, Base64.NO_WRAP)
+                if (blob.size < 17) return@withContext "❌ 数据损坏"
+                if (String(blob, 0, 8, Charsets.US_ASCII) != "Salted__")
+                    return@withContext "❌ 格式错误"
+                if (password.isBlank()) return@withContext "❌ 请输入密码"
+                val salt = blob.copyOfRange(8, 16)
+                ct = blob.copyOfRange(16, blob.size)
+                val kp = deriveOpenSSLKey(password, salt)
+                key = kp.first; iv = kp.second
+            } else {
+                val kRe = Regex("""__EV_K_REV\s*=\s*['"]([0-9a-fA-F]+)['"]""")
+                val kM = kRe.find(text) ?: return@withContext "❌ 缺少密钥字段"
+                val revHex = kM.groupValues[1].reversed()
+                if (revHex.length != 96) return@withContext "❌ 密钥长度错误"
+                key = revHex.substring(0, 64).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                iv  = revHex.substring(64, 96).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                ct = Base64.decode(b64, Base64.NO_WRAP)
+            }
 
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
             val plain = try { cipher.doFinal(ct) }
-                        catch (e: Exception) { return@withContext "❌ 密码错误" }
+                        catch (e: Exception) { return@withContext "❌ 密码错误或数据损坏" }
 
             val raw = outputPathRaw.trim().ifBlank { src.parent ?: "/sdcard" }
             val outName = src.name.removeSuffix("-protected.sh").let {
@@ -313,7 +425,7 @@ exit ${D}__EV_RC
             outFile.setExecutable(true)
 
             """
-✅ 已还原
+✅ 已还原 (${if (isPwd) "密码模式" else "无密码模式"})
 📄 ${outFile.absolutePath}
 📦 ${plain.size} 字节
 """.trimIndent()
