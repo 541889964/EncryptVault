@@ -17,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -30,7 +29,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import com.encryptvault.app.crypto.CryptoManager
 import com.encryptvault.app.crypto.FileItem
-import com.encryptvault.app.crypto.ProcessStatus
 import kotlinx.coroutines.*
 
 @Composable
@@ -126,9 +124,9 @@ fun EncryptApp() {
                         0 -> "文件加密"; 1 -> "源码保护"; else -> "设置"
                     }, fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
                     Text(when (selectedTab) {
-                        0 -> "Local · AES-256-GCM"
-                        1 -> "PBKDF2 · 600K · MT Ready"
-                        else -> "Version 5.1.0"
+                        0 -> "PBKDF2-SHA512 · 1.2M"
+                        1 -> "PBKDF2-SHA512 · 1.5M"
+                        else -> "Version 6.0.0"
                     }, fontSize = 12.sp, color = Color.White.copy(0.45f), letterSpacing = 1.sp)
                 }
                 if (selectedTab == 0 && files.isNotEmpty()) {
@@ -339,9 +337,6 @@ fun FileRow(file: FileItem) {
     }
 }
 
-// ============================================================
-//  Shell Tab (v5.1 新增模式选择 + 高级选项)
-// ============================================================
 @Composable
 fun ShellTab(crypto: CryptoManager) {
     var inputPath by remember { mutableStateOf("") }
@@ -361,7 +356,6 @@ fun ShellTab(crypto: CryptoManager) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 12.dp)) {
 
-        // ---- 模式选择 ----
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
@@ -379,16 +373,15 @@ fun ShellTab(crypto: CryptoManager) {
                     Spacer(Modifier.height(10.dp))
                     Text(
                         if (passwordMode)
-                            "运行时需输入密码，PBKDF2 600K 轮派生密钥。脚本内零密钥，世界顶级安全。"
+                            "运行时需输入密码。PBKDF2-SHA512 1,500,000 轮派生密钥，脚本内零密钥。"
                         else
-                            "运行时直接执行，无需输密码。密钥混淆内嵌脚本 —— 防小白不防高手，适合外挂分发。",
+                            "运行时直接执行，无需输密码。密钥以混淆 hex 内嵌脚本 —— 防小白不防逆向高手。",
                         color = Color.White.copy(0.6f), fontSize = 11.sp, lineHeight = 16.sp
                     )
                 }
             }
         }
 
-        // ---- 路径 ----
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
@@ -401,7 +394,6 @@ fun ShellTab(crypto: CryptoManager) {
             }
         }
 
-        // ---- 密码 (仅密码模式) ----
         if (passwordMode) {
             item {
                 GlassCard(Modifier.fillMaxWidth()) {
@@ -419,7 +411,6 @@ fun ShellTab(crypto: CryptoManager) {
             }
         }
 
-        // ---- 高级选项 ----
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column {
@@ -444,7 +435,7 @@ fun ShellTab(crypto: CryptoManager) {
                             GlassTextField(maxRunsText, { maxRunsText = it.filter { c -> c.isDigit() } },
                                 "最大执行次数 (0 = 无限)", "0", isNumber = true)
                             Spacer(Modifier.height(4.dp))
-                            Text("超过次数后脚本自动 rm -f $0 自毁",
+                            Text("超过次数后脚本自动销毁自身 (shred 覆盖 + 删除)",
                                 color = Color.White.copy(0.4f), fontSize = 11.sp)
                             Spacer(Modifier.height(12.dp))
                             if (passwordMode) {
@@ -452,7 +443,7 @@ fun ShellTab(crypto: CryptoManager) {
                                     { failLimitText = it.filter { c -> c.isDigit() } },
                                     "密码错误自毁阈值 (0 = 关闭)", "3", isNumber = true)
                                 Spacer(Modifier.height(4.dp))
-                                Text("连续输错密码 N 次后脚本自动自毁",
+                                Text("连续输错密码 N 次后脚本自动销毁自身",
                                     color = Color.White.copy(0.4f), fontSize = 11.sp)
                             }
                         }
@@ -461,7 +452,6 @@ fun ShellTab(crypto: CryptoManager) {
             }
         }
 
-        // ---- 操作按钮 ----
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = {
@@ -541,35 +531,39 @@ fun ModeChip(text: String, active: Boolean, modifier: Modifier, onClick: () -> U
 
 @Composable
 fun SettingsTab() {
+    // 注意: Kotlin 字符串里 $ 需要转义为 ${'$'}
+    val dollarZero = "${'$'}0"
+    val dollarHome = "${'$'}HOME"
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
         contentPadding = PaddingValues(bottom = 12.dp)) {
         item { GlassCard(Modifier.fillMaxWidth()) {
             Column {
-                Text("加密算法", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text("加密算法 (v6)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Spacer(Modifier.height(12.dp))
-                InfoRow("对称算法", "AES-256")
-                InfoRow("加密模式", "GCM (AEAD)")
-                InfoRow("密钥派生", "PBKDF2-HMAC-SHA256")
-                InfoRow("迭代次数", "600,000 轮")
+                InfoRow("文件算法", "AES-256-GCM")
+                InfoRow("文件 PRF", "PBKDF2-HMAC-SHA512")
+                InfoRow("文件轮数", "1,200,000")
+                InfoRow("Shell 密码算法", "AES-256-CBC")
+                InfoRow("Shell 密码 PRF", "PBKDF2-HMAC-SHA512")
+                InfoRow("Shell 密码轮数", "1,500,000")
+                InfoRow("Shell 无密码", "AES-256-CBC + 混淆密钥")
                 InfoRow("盐值", "16 字节随机")
-                InfoRow("认证标签", "128 bit")
-                InfoRow("Shell 密码模式", "PBKDF2 + AES-256-CBC")
-                InfoRow("Shell 无密码", "AES-256-CBC + 内嵌密钥")
-                InfoRow("密码传输", "stdin (不可见)")
+                InfoRow("认证标签", "128 bit (GCM)")
+                InfoRow("自毁方式", "shred 覆盖 3 次")
             }
         } }
         item { GlassCard(Modifier.fillMaxWidth()) {
             Column {
                 Text("安全说明", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Spacer(Modifier.height(10.dp))
-                Text("密码模式：密钥由密码派生，脚本内不存密钥。运行时密码走 stdin 传给 openssl，不在进程列表可见。临时文件用 umask 077 创建，权限始终 0600。trap 捕获 EXIT/INT/TERM/HUP，任何退出方式都清理临时文件。",
+                Text("v6 采用 PBKDF2-HMAC-SHA512 作为密钥派生函数，轮数提升到 1,200,000 / 1,500,000。SHA512 比 SHA256 输出更长、抗碰撞性更强，配合高轮数让 GPU 和 ASIC 破解成本提升数个数量级。",
                     color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(10.dp))
-                Text("无密码模式：密钥以 hex 反转形式内嵌脚本，运行时反混淆后直接解密。适合外挂分发，防普通用户查看源码，但防不住逆向能力强的攻击者。",
+                Text("密码模式运行时密码通过 stdin 传给 openssl，不出现在进程参数列表。临时文件用 umask 077 创建，权限始终 0600。trap 捕获 EXIT / INT / TERM / HUP 信号，任何非 SIGKILL 退出都会清理临时文件。",
                     color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(10.dp))
-                Text("自毁机制：密码错误 N 次或执行次数超限后，脚本执行 rm -f $0 删除自身，同时清理状态文件。状态文件位于 $HOME/.ev_state/，用脚本 SHA-256 前 16 位命名。",
+                Text("自毁机制：密码错误 N 次或执行次数超限后，脚本调用 shred -u -n 3 覆盖 3 遍磁盘扇区后再删除，比单纯 $dollarZero 更难恢复。状态文件位于 $dollarHome/.ev_state/，用脚本 SHA-256 前 16 位命名。",
                     color = Color.White.copy(0.7f), fontSize = 12.sp, lineHeight = 19.sp)
             }
         } }
@@ -578,7 +572,7 @@ fun SettingsTab() {
                 Text("关于", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Spacer(Modifier.height(8.dp))
                 InfoRow("应用", "EncryptVault")
-                InfoRow("版本", "5.1.0")
+                InfoRow("版本", "6.0.0")
                 InfoRow("网络", "零联网")
                 InfoRow("数据", "零收集")
                 InfoRow("兼容", "Termux / MT / Linux")

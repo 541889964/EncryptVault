@@ -30,17 +30,19 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val VERSION: Byte = 0x05
+        private const val VERSION: Byte = 0x06
         private const val SALT_SIZE = 16
         private const val IV_SIZE = 16
         private const val CHECK_SIZE = 8
-        private const val ITERATIONS = 600_000
+        // 文件: PBKDF2-HMAC-SHA512 1,200,000 轮
+        private const val ITERATIONS = 1_200_000
+        private const val FILE_PRF = "PBKDF2WithHmacSHA512"
         private const val KEY_BITS = 256
         private const val GCM_TAG_BITS = 128
         private const val HEADER_SIZE = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
-        private const val OPENSSL_ITER = 600_000
-        private const val OPENSSL_MD = "PBKDF2WithHmacSHA256"
-        private const val D = "\$"
+        // Shell: PBKDF2-HMAC-SHA512 1,500,000 轮 (openssl -md sha512)
+        private const val OPENSSL_ITER = 1_500_000
+        private const val OPENSSL_MD = "PBKDF2WithHmacSHA512"
     }
 
     fun getFileInfo(uri: Uri): FileItem? = try {
@@ -70,7 +72,7 @@ class CryptoManager(private val ctx: Context) {
     }
 
     private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val factory = SecretKeyFactory.getInstance(FILE_PRF)
         val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_BITS)
         return SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
     }
@@ -113,15 +115,23 @@ class CryptoManager(private val ctx: Context) {
             val data = readBytes(uri)
             if (data.size < HEADER_SIZE + 16) return@withContext false
             val v = data[0]
-            if (v != VERSION && v != 0x04.toByte() && v != 0x03.toByte()) return@withContext false
-            val chkSize = 8
-            val hdr = 1 + SALT_SIZE + IV_SIZE + chkSize
+            // 兼容 v3/v4/v5/v6
+            if (v != VERSION && v != 0x05.toByte() && v != 0x04.toByte() && v != 0x03.toByte())
+                return@withContext false
+            val hdr = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
             if (data.size < hdr + 16) return@withContext false
             val salt = data.copyOfRange(1, 1 + SALT_SIZE)
             val iv = data.copyOfRange(1 + SALT_SIZE, 1 + SALT_SIZE + IV_SIZE)
             val check = data.copyOfRange(1 + SALT_SIZE + IV_SIZE, hdr)
             val ct = data.copyOfRange(hdr, data.size)
-            val key = deriveKey(password, salt)
+
+            // 旧版本用 SHA256, v6 用 SHA512
+            val prf = if (v == VERSION) FILE_PRF else "PBKDF2WithHmacSHA256"
+            val iters = if (v == VERSION) ITERATIONS else 600_000
+            val factory = SecretKeyFactory.getInstance(prf)
+            val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, iters, KEY_BITS)
+            val key = SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
+
             if (!check.contentEquals(keyCheck(key))) return@withContext false
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
@@ -131,7 +141,7 @@ class CryptoManager(private val ctx: Context) {
     }
 
     // ============================================================
-    //  Shell 保护 — 双模式
+    //  Shell 保护 v6
     // ============================================================
     private fun deriveOpenSSLKey(password: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val factory = SecretKeyFactory.getInstance(OPENSSL_MD)
@@ -182,26 +192,26 @@ class CryptoManager(private val ctx: Context) {
                 cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
                 val ct = cipher.doFinal(plain)
                 b64 = Base64.encodeToString(ct, Base64.NO_WRAP)
-                // 96 字符 hex (32B key + 16B iv), 反转混淆
                 keyRevHex = (key + iv).toHex().reversed()
             }
 
             val id = sha16(plain)
             val mode = if (passwordMode) "password" else "nopass"
+            val iterLabel = if (passwordMode) "PBKDF2-HMAC-SHA512 (1,500,000 轮) + AES-256-CBC"
+                            else "AES-256-CBC + 混淆内嵌密钥"
 
             val tmpl = """
 #!/data/data/com.termux/files/usr/bin/bash
 # 也可在 MT 管理器中运行:  bash 本文件.sh
 # ============================================================
-#  EncryptVault Protected Script (v5.1 · ${mode})
-#  ${if (passwordMode) "PBKDF2-HMAC-SHA256 (600,000 轮) + AES-256-CBC" else "AES-256-CBC + 内嵌混淆密钥"}
+#  EncryptVault Protected Script (v6 · ${mode})
+#  $iterLabel
 # ============================================================
 
 printf '\n⚠️  本脚本会执行解密后的 Bash 代码, 请确认来源可信\n\n' >&2
 
 umask 077
 
-# ---- 自动检测临时目录 ----
 __EV_TMPDIR=""
 for __d in "${D}{TMPDIR:-}" "/data/data/com.termux/files/usr/tmp" "/tmp" "."; do
     if [ -n "${D}__d" ] && [ -d "${D}__d" ] && [ -w "${D}__d" ]; then
@@ -213,7 +223,6 @@ done
 command -v openssl >/dev/null 2>&1 || {
     printf '❌ 需要 openssl\n' >&2; exit 1; }
 
-# ---- 参数 ----
 __EV_MODE='${mode}'
 __EV_D='$b64'
 __EV_K_REV='$keyRevHex'
@@ -221,11 +230,9 @@ __EV_MAX=$maxRuns
 __EV_FAIL=$failLimit
 __EV_ID='$id'
 
-# 规范化数字参数
 case "${D}__EV_MAX"  in ''|*[!0-9]*) __EV_MAX=0 ;; esac
 case "${D}__EV_FAIL" in ''|*[!0-9]*) __EV_FAIL=0 ;; esac
 
-# ---- 状态文件目录 ----
 __EV_HOME="${D}{HOME:-}"
 [ -z "${D}__EV_HOME" ] && __EV_HOME="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 [ -z "${D}__EV_HOME" ] && __EV_HOME="."
@@ -234,14 +241,19 @@ mkdir -p "${D}__EV_STATE_DIR" 2>/dev/null
 chmod 700 "${D}__EV_STATE_DIR" 2>/dev/null
 __EV_STATE="${D}{__EV_STATE_DIR}/${D}__EV_ID"
 
-# ---- 自毁函数 ----
+# ---- 自毁: shred 覆盖 3 次 ----
 __ev_self_destruct() {
+    if command -v shred >/dev/null 2>&1; then
+        shred -u -n 3 -z "$0" 2>/dev/null
+    fi
     rm -f "$0" 2>/dev/null
+    if command -v shred >/dev/null 2>&1; then
+        shred -u -n 3 -z "${D}__EV_STATE" 2>/dev/null
+    fi
     rm -f "${D}__EV_STATE" 2>/dev/null
-    printf '💥 脚本已自毁\n' >&2
+    printf '💥 脚本已自毁 (shred 覆盖 3 次)\n' >&2
 }
 
-# ---- 检查最大执行次数 ----
 if [ "${D}__EV_MAX" -gt 0 ]; then
     __EV_RUNS=0
     [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
@@ -253,38 +265,31 @@ if [ "${D}__EV_MAX" -gt 0 ]; then
     fi
 fi
 
-# ---- 临时文件 ----
-__EV_TMP="${D}{__EV_TMPDIR}/.ev_${D}${D}_${D}(date +%s)"
+__EV_TMP="${D}{__EV_TMPDIR}/.ev_${D}${D}_${D}(date +%s)_${D}RANDOM"
 trap 'rm -f "${D}{__EV_TMP}.enc" "${D}{__EV_TMP}.sh" "${D}{__EV_TMP}.k" 2>/dev/null' EXIT INT TERM HUP
 
 printf '%s' "${D}__EV_D" | base64 -d > "${D}{__EV_TMP}.enc" 2>/dev/null
 unset __EV_D
 [ -s "${D}{__EV_TMP}.enc" ] || { printf '❌ 数据损坏\n' >&2; exit 1; }
 
-# ---- 分支: 密码模式 / 无密码 ----
 if [ "${D}__EV_MODE" = "password" ]; then
-    # ================ 密码模式 ================
     __EV_MAX_TRIES=${D}__EV_FAIL
     [ "${D}__EV_MAX_TRIES" -le 0 ] && __EV_MAX_TRIES=1
-
     __EV_OK=0
     __EV_TRIES=0
     while [ ${D}__EV_TRIES -lt ${D}__EV_MAX_TRIES ]; do
         printf '🔐 输入密码: ' >&2
         IFS= read -r -s __EV_PWD
         printf '\n' >&2
-
         if [ -z "${D}__EV_PWD" ]; then
             __EV_TRIES=${D}(( __EV_TRIES + 1 ))
             continue
         fi
-
         printf '%s\n' "${D}__EV_PWD" | \
-            openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 1500000 -md sha512 \
                 -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
         __EV_RC=${D}?
         unset __EV_PWD
-
         if [ ${D}__EV_RC -eq 0 ] && [ -s "${D}{__EV_TMP}.sh" ]; then
             __EV_OK=1; break
         fi
@@ -292,9 +297,7 @@ if [ "${D}__EV_MODE" = "password" ]; then
         __EV_TRIES=${D}(( __EV_TRIES + 1 ))
         printf '❌ 密码错误 (%s/%s)\n' "${D}__EV_TRIES" "${D}__EV_MAX_TRIES" >&2
     done
-
     rm -f "${D}{__EV_TMP}.enc"
-
     if [ ${D}__EV_OK -ne 1 ]; then
         if [ "${D}__EV_FAIL" -gt 0 ]; then
             printf '💥 密码错误次数过多, 脚本自毁\n' >&2
@@ -303,28 +306,23 @@ if [ "${D}__EV_MODE" = "password" ]; then
         exit 1
     fi
 else
-    # ================ 无密码模式 ================
     printf '%s' "${D}__EV_K_REV" | rev > "${D}{__EV_TMP}.k" 2>/dev/null
     unset __EV_K_REV
     [ -s "${D}{__EV_TMP}.k" ] || { printf '❌ 密钥损坏\n' >&2; exit 1; }
-
     __EV_KEY_HEX=$(cut -c1-64  "${D}{__EV_TMP}.k")
     __EV_IV_HEX=$(cut -c65-96 "${D}{__EV_TMP}.k")
     rm -f "${D}{__EV_TMP}.k"
-
     openssl enc -d -aes-256-cbc -K "${D}__EV_KEY_HEX" -iv "${D}__EV_IV_HEX" \
         -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
     __EV_RC=${D}?
     rm -f "${D}{__EV_TMP}.enc"
     unset __EV_KEY_HEX __EV_IV_HEX
-
     if [ ${D}__EV_RC -ne 0 ] || [ ! -s "${D}{__EV_TMP}.sh" ]; then
         printf '❌ 解密失败\n' >&2
         exit 1
     fi
 fi
 
-# ---- 更新执行计数 ----
 if [ "${D}__EV_MAX" -gt 0 ]; then
     __EV_RUNS=0
     [ -f "${D}__EV_STATE" ] && __EV_RUNS=$(cat "${D}__EV_STATE" 2>/dev/null || echo 0)
@@ -334,7 +332,6 @@ if [ "${D}__EV_MAX" -gt 0 ]; then
     chmod 600 "${D}__EV_STATE" 2>/dev/null
 fi
 
-# ---- 执行 ----
 chmod 700 "${D}{__EV_TMP}.sh" 2>/dev/null
 bash "${D}{__EV_TMP}.sh"
 __EV_RC=${D}?
@@ -353,12 +350,12 @@ exit ${D}__EV_RC
             val failLabel = if (passwordMode) (if (failLimit > 0) "$failLimit 次自毁" else "关闭") else "—"
 
             """
-✅ 加密成功 ($modeLabel)
+✅ 加密成功 ($modeLabel · v6)
 📄 ${outFile.absolutePath}
-🔒 ${if (passwordMode) "PBKDF2-SHA256(600K) + AES-256-CBC" else "AES-256-CBC + 内嵌混淆"}
+🔒 ${if (passwordMode) "PBKDF2-SHA512(1.5M) + AES-256-CBC" else "AES-256-CBC + 混淆内嵌"}
 📊 执行上限: $maxLabel
-💥 密码自毁: $failLabel
-🛡 脚本内无明文密钥 · umask 077
+💥 自毁方式: shred 覆盖 3 次
+🛡 umask 077 · trap 全覆盖
 🔗 兼容: Termux / MT Manager / Linux
 ▶️ 运行: bash ${outFile.name}
 """.trimIndent()
