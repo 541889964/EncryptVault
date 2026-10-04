@@ -12,6 +12,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.spec.KeySpec
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
@@ -19,9 +20,7 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 data class FileItem(
-    val uri: Uri,
-    val name: String,
-    val size: String,
+    val uri: Uri, val name: String, val size: String,
     val status: ProcessStatus = ProcessStatus.PENDING
 )
 
@@ -30,18 +29,18 @@ enum class ProcessStatus { PENDING, ENCRYPTED, DECRYPTED, DONE, ERROR }
 class CryptoManager(private val ctx: Context) {
 
     companion object {
-        private const val VERSION: Byte = 0x06
+        private const val VERSION: Byte = 0x07
         private const val SALT_SIZE = 16
         private const val IV_SIZE = 16
         private const val CHECK_SIZE = 8
-        // 文件: PBKDF2-HMAC-SHA512 1,200,000 轮
-        private const val ITERATIONS = 1_200_000
+        // 文件: PBKDF2-HMAC-SHA512 2,000,000 轮
+        private const val ITERATIONS = 2_000_000
         private const val FILE_PRF = "PBKDF2WithHmacSHA512"
         private const val KEY_BITS = 256
         private const val GCM_TAG_BITS = 128
         private const val HEADER_SIZE = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
-        // Shell: PBKDF2-HMAC-SHA512 1,500,000 轮 (openssl -md sha512)
-        private const val OPENSSL_ITER = 1_500_000
+        // Shell: PBKDF2-HMAC-SHA512 2,000,000 轮 (openssl -iter 2000000 -md sha512)
+        private const val OPENSSL_ITER = 2_000_000
         private const val OPENSSL_MD = "PBKDF2WithHmacSHA512"
     }
 
@@ -77,9 +76,12 @@ class CryptoManager(private val ctx: Context) {
         return SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
     }
 
+    // v7: 用 HMAC-SHA256 派生 8 字节指纹, 避免密钥哈希泄露部分信息
     private fun keyCheck(key: SecretKeySpec): ByteArray {
-        val digest = MessageDigest.getInstance("SHA-256")
-        return digest.digest(key.encoded).copyOf(CHECK_SIZE)
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(key.encoded, "HmacSHA256"))
+        val tag = mac.doFinal("EncryptVault-KCV-v7".toByteArray(Charsets.US_ASCII))
+        return tag.copyOf(CHECK_SIZE)
     }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
@@ -115,9 +117,8 @@ class CryptoManager(private val ctx: Context) {
             val data = readBytes(uri)
             if (data.size < HEADER_SIZE + 16) return@withContext false
             val v = data[0]
-            // 兼容 v3/v4/v5/v6
-            if (v != VERSION && v != 0x05.toByte() && v != 0x04.toByte() && v != 0x03.toByte())
-                return@withContext false
+            if (v != VERSION && v != 0x06.toByte() && v != 0x05.toByte()
+                && v != 0x04.toByte() && v != 0x03.toByte()) return@withContext false
             val hdr = 1 + SALT_SIZE + IV_SIZE + CHECK_SIZE
             if (data.size < hdr + 16) return@withContext false
             val salt = data.copyOfRange(1, 1 + SALT_SIZE)
@@ -125,14 +126,30 @@ class CryptoManager(private val ctx: Context) {
             val check = data.copyOfRange(1 + SALT_SIZE + IV_SIZE, hdr)
             val ct = data.copyOfRange(hdr, data.size)
 
-            // 旧版本用 SHA256, v6 用 SHA512
-            val prf = if (v == VERSION) FILE_PRF else "PBKDF2WithHmacSHA256"
-            val iters = if (v == VERSION) ITERATIONS else 600_000
+            // 版本自适应
+            val prf = when (v) {
+                VERSION, 0x06.toByte() -> FILE_PRF
+                else -> "PBKDF2WithHmacSHA256"
+            }
+            val iters = when (v) {
+                VERSION -> ITERATIONS
+                0x06.toByte() -> 1_200_000
+                else -> 600_000
+            }
             val factory = SecretKeyFactory.getInstance(prf)
             val spec: KeySpec = PBEKeySpec(password.toCharArray(), salt, iters, KEY_BITS)
             val key = SecretKeySpec(factory.generateSecret(spec).encoded, "AES")
 
-            if (!check.contentEquals(keyCheck(key))) return@withContext false
+            // KCV 校验 (v7 用 HMAC, 旧版用 SHA)
+            val kcvOk = if (v == VERSION) {
+                check.contentEquals(keyCheck(key))
+            } else {
+                val legacy = MessageDigest.getInstance("SHA-256")
+                    .digest(key.encoded).copyOf(CHECK_SIZE)
+                check.contentEquals(legacy)
+            }
+            if (!kcvOk) return@withContext false
+
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
             writeBytes(uri, cipher.doFinal(ct))
@@ -141,7 +158,7 @@ class CryptoManager(private val ctx: Context) {
     }
 
     // ============================================================
-    //  Shell 保护 v6
+    //  Shell 保护 v7
     // ============================================================
     private fun deriveOpenSSLKey(password: String, salt: ByteArray): Pair<ByteArray, ByteArray> {
         val factory = SecretKeyFactory.getInstance(OPENSSL_MD)
@@ -197,14 +214,14 @@ class CryptoManager(private val ctx: Context) {
 
             val id = sha16(plain)
             val mode = if (passwordMode) "password" else "nopass"
-            val iterLabel = if (passwordMode) "PBKDF2-HMAC-SHA512 (1,500,000 轮) + AES-256-CBC"
+            val iterLabel = if (passwordMode) "PBKDF2-HMAC-SHA512 (2,000,000 轮) + AES-256-CBC"
                             else "AES-256-CBC + 混淆内嵌密钥"
 
             val tmpl = """
 #!/data/data/com.termux/files/usr/bin/bash
 # 也可在 MT 管理器中运行:  bash 本文件.sh
 # ============================================================
-#  EncryptVault Protected Script (v6 · ${mode})
+#  EncryptVault Protected Script (v7 · ${mode})
 #  $iterLabel
 # ============================================================
 
@@ -241,7 +258,6 @@ mkdir -p "${D}__EV_STATE_DIR" 2>/dev/null
 chmod 700 "${D}__EV_STATE_DIR" 2>/dev/null
 __EV_STATE="${D}{__EV_STATE_DIR}/${D}__EV_ID"
 
-# ---- 自毁: shred 覆盖 3 次 ----
 __ev_self_destruct() {
     if command -v shred >/dev/null 2>&1; then
         shred -u -n 3 -z "$0" 2>/dev/null
@@ -285,8 +301,9 @@ if [ "${D}__EV_MODE" = "password" ]; then
             __EV_TRIES=${D}(( __EV_TRIES + 1 ))
             continue
         fi
+        printf '⏳ 派生密钥中 (约 3 秒)...\n' >&2
         printf '%s\n' "${D}__EV_PWD" | \
-            openssl enc -d -aes-256-cbc -pbkdf2 -iter 1500000 -md sha512 \
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 2000000 -md sha512 \
                 -pass stdin -in "${D}{__EV_TMP}.enc" -out "${D}{__EV_TMP}.sh" 2>/dev/null
         __EV_RC=${D}?
         unset __EV_PWD
@@ -350,9 +367,9 @@ exit ${D}__EV_RC
             val failLabel = if (passwordMode) (if (failLimit > 0) "$failLimit 次自毁" else "关闭") else "—"
 
             """
-✅ 加密成功 ($modeLabel · v6)
+✅ 加密成功 ($modeLabel · v7)
 📄 ${outFile.absolutePath}
-🔒 ${if (passwordMode) "PBKDF2-SHA512(1.5M) + AES-256-CBC" else "AES-256-CBC + 混淆内嵌"}
+🔒 ${if (passwordMode) "PBKDF2-SHA512(2M) + AES-256-CBC" else "AES-256-CBC + 混淆内嵌"}
 📊 执行上限: $maxLabel
 💥 自毁方式: shred 覆盖 3 次
 🛡 umask 077 · trap 全覆盖
