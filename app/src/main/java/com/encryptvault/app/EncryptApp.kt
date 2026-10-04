@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.*
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -211,6 +212,7 @@ fun EncryptPage(
     onPasswordChange: (String) -> Unit, onToggleShow: () -> Unit,
     onEncrypt: () -> Unit, onDecrypt: () -> Unit, onClear: () -> Unit
 ) {
+    Column(Modifier.fillMaxSize()) {
     GlassCard(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Column {
             Text("加密密码", color = Color.White.copy(0.7f), fontSize = 13.sp)
@@ -304,6 +306,7 @@ fun EncryptPage(
             Spacer(Modifier.width(6.dp))
             Text("解密")
         }
+    }
     }
 }
 
