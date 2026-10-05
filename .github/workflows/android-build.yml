@@ -1,32 +1,28 @@
-name: Build
+name: Android Build
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-permissions:
-  contents: write
+    branches: [ main ]
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v5
-        with: { distribution: 'temurin', java-version: '17' }
-      - uses: android-actions/setup-android@v4
-        with: { packages: 'platform-tools' }
-      - uses: gradle/actions/setup-gradle@v4
-      - name: Decode keystore
-        run: |
-          mkdir -p keystore
-          base64 -d keystore/xuanyi.b64 > keystore/xuanyi.jks
-      - name: Build
-        run: gradle assembleRelease --no-daemon --stacktrace
-      - uses: softprops/action-gh-release@v1
+      - uses: actions/setup-java@v4
         with:
-          tag_name: latest
-          name: Latest Build
-          files: app/build/outputs/apk/release/*.apk
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          java-version: '17'
+          distribution: 'temurin'
+      - uses: android-actions/setup-android@v3
+      - name: Setup Gradle 8.7
+        run: |
+          rm -rf ~/.gradle || true
+          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          unzip -q gradle-8.7-bin.zip
+          echo "$PWD/gradle-8.7/bin" >> $GITHUB_PATH
+          $PWD/gradle-8.7/bin/gradle --version
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handwrite-ime-debug
+          path: app/build/outputs/apk/debug/*.apk
